@@ -35,7 +35,7 @@ function firstString(...values: unknown[]): string | undefined {
 
 export function normalizeOrigin(baseUrl: string): string {
   try {
-    const url = new URL(/^https?:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
+    const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
     if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
     return url.origin;
   } catch {

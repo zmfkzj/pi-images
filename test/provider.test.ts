@@ -65,6 +65,23 @@ describe("provider registration and credentials", () => {
     expect(() => normalizeOrigin("http://[")).toThrow("Invalid CLIProxyAPI base URL");
   });
 
+  it.each(["ftp://gateway.test:8317", "FTP://gateway.test:8317", "custom+transport://gateway.test:8317"])(
+    "rejects unsupported URL schemes: %s", (baseUrl) => {
+      expect(() => normalizeOrigin(baseUrl)).toThrow("Invalid CLIProxyAPI base URL");
+    });
+
+  it.each(["localhost:8317", "gateway:8317"])("supports bare host:port: %s", (baseUrl) => {
+    expect(normalizeOrigin(baseUrl)).toBe(`http://${baseUrl}`);
+  });
+
+  it("rejects an unsupported URL before sending credentials", async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const result = await adapter({ env: { CLIPROXYAPI_BASE_URL: "ftp://gateway.test:8317" } }, fetch).run();
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toMatch(/Invalid CLIProxyAPI base URL/);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("registers without credentials and returns a helpful error before fetch", async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const config = createProviderConfig({ agentDir, env: {} });
