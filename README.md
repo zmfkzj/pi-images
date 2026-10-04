@@ -9,7 +9,7 @@ extension's `cliproxyapi` provider so its refresh cannot unregister this model.
 ## `generate_image` tool
 
 The extension also registers a `generate_image` tool in the main session, so you
-can just ask: "draw a gold coin icon" or paste an image (`ctrl+v`, or drag it in)
+can just ask: "draw a gold coin icon" or paste an image (`ctrl+v`, `cmd+v`, or drag it in)
 and ask "make this pixel art".
 
 - **Display:** the result is returned as an image block, so Pi shows it inline
@@ -24,6 +24,22 @@ and ask "make this pixel art".
   follows the produced format) or to `<tmpdir>/pi-images/` by default.
 - Options: `background`, `size`, `quality`, and `model` (`provider/id` of any
   registered image model; default `cliproxyapi-images/gpt-image-2.5`).
+
+## Pasted images
+
+- **Preview:** a pasted image shows above the editor at once. This covers Pi's
+  clipboard paste, a dropped file, and herdr's `--remote` clipboard bridge,
+  which pastes a staged path. A paste counts as an image paste only when it
+  consists entirely of paths to existing image files.
+- **Attach:** on submit, those images are attached to the message, so the model
+  sees them without a `read` call. The path stays in the text for
+  `generate_image`. The images also stay visible in the transcript, below the
+  message. That transcript entry stores paths only, so a staged file that has
+  since been deleted shows as unavailable.
+- **Cmd+V:** `super+v` (Cmd+V reported through the kitty keyboard protocol)
+  and the empty bracketed paste that terminals send for an image-only clipboard
+  both run Pi's clipboard paste, the same as `ctrl+v`. Under `herdr --remote`,
+  herdr consumes the empty paste itself and bridges the image.
 
 ## Codemode
 

@@ -35,7 +35,9 @@ describe("provider registration and credentials", () => {
   it("registers a separate image provider without capturing a real key", () => {
     const registerProvider = vi.fn();
     const registerTool = vi.fn();
-    gatewayImages({ registerProvider, registerTool } as unknown as ExtensionAPI);
+    const on = vi.fn();
+    gatewayImages({ registerProvider, registerTool, on, registerEntryRenderer: vi.fn() } as unknown as ExtensionAPI);
+    expect(on.mock.calls.map((call) => call[0])).toContain("input");
     expect(registerProvider.mock.calls[0][0]).toBe(PROVIDER_ID);
     expect(registerTool.mock.calls[0][0].name).toBe("generate_image");
     const config = createProviderConfig({ agentDir, env });
