@@ -2,6 +2,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AssistantImages, ImageModel, ImagesContext, ImagesOptions, Usage } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { createGenerateImageTool } from "./tool.ts";
+
+export { createGenerateImageTool, TOOL_NAME } from "./tool.ts";
 
 export const PROVIDER_ID = "cliproxyapi-images";
 export const MODEL_ID = "gpt-image-2.5";
@@ -204,4 +207,5 @@ export function createProviderConfig(options: ConnectionOptions = {}): ProviderC
 
 export default function gatewayImages(pi: ExtensionAPI): void {
   pi.registerProvider(PROVIDER_ID, createProviderConfig());
+  pi.registerTool(createGenerateImageTool({ defaultModel: `${PROVIDER_ID}/${MODEL_ID}`, timeoutMs: DEFAULT_TIMEOUT_MS }));
 }

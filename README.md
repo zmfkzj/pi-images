@@ -5,7 +5,29 @@ Node 22+ supplies fetch, FormData and Blob; there are no runtime dependencies.
 
 The model is **`cliproxyapi-images/gpt-image-2.5`**, separate from the chat
 extension's `cliproxyapi` provider so its refresh cannot unregister this model.
-Image models do not appear in `/model`; use them from codemode:
+
+## `generate_image` tool
+
+The extension also registers a `generate_image` tool in the main session, so you
+can just ask: "draw a gold coin icon" or paste an image (`ctrl+v`, or drag it in)
+and ask "make this pixel art".
+
+- **Display:** the result is returned as an image block, so Pi shows it inline
+  in terminals with an image protocol (kitty, iTerm2, WezTerm, Ghostty...; see
+  `terminal.showImages` / `PI_IMAGE_PROTOCOL`). The model sees it too.
+- **Input:** `references` takes image file paths (absolute, `~/`, `@path` or
+  relative to the working directory; pasted clipboard images arrive as such
+  paths), `"attached"` for every image attached to the latest user message with
+  images (e.g. `pi @photo.png "..."`), or `"attached:N"` for its N-th image.
+  PNG, JPEG, WebP and GIF, up to 20 MiB each.
+- **Output:** saved to `path` (relative to the working directory; the extension
+  follows the produced format) or to `<tmpdir>/pi-images/` by default.
+- Options: `background`, `size`, `quality`, and `model` (`provider/id` of any
+  registered image model; default `cliproxyapi-images/gpt-image-2.5`).
+
+## Codemode
+
+Image models do not appear in `/model`; codemode scripts can call them directly:
 
 ```js
 const model = await models.getModelOfType("image", "cliproxyapi-images", "gpt-image-2.5");

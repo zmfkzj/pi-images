@@ -34,8 +34,10 @@ afterEach(() => { vi.unstubAllEnvs(); rmSync(agentDir, { recursive: true, force:
 describe("provider registration and credentials", () => {
   it("registers a separate image provider without capturing a real key", () => {
     const registerProvider = vi.fn();
-    gatewayImages({ registerProvider } as unknown as ExtensionAPI);
+    const registerTool = vi.fn();
+    gatewayImages({ registerProvider, registerTool } as unknown as ExtensionAPI);
     expect(registerProvider.mock.calls[0][0]).toBe(PROVIDER_ID);
+    expect(registerTool.mock.calls[0][0].name).toBe("generate_image");
     const config = createProviderConfig({ agentDir, env });
     expect(config.name).toBe("CLIProxyAPI Images");
     expect(config.models).toEqual([{ type: "image", id: MODEL_ID, name: "GPT Image 2.5", api: IMAGE_API,
