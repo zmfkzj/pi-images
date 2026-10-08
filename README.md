@@ -35,7 +35,17 @@ and ask "make this pixel art".
   sees them without a `read` call. The path stays in the text for
   `generate_image`. The images also stay visible in the transcript, below the
   message. That transcript entry stores paths only, so a staged file that has
-  since been deleted shows as unavailable.
+  since been deleted shows as unavailable. This also applies when the message
+  starts with the image path, as after `ctrl+v` into an empty editor. Shell
+  commands (`!`), prompt templates and skills (`/name` of a registered command)
+  are left as they are; other text that starts with `/` is an ordinary message.
+- **Held-back prompts:** an extension that holds a prompt back before Pi's
+  input chain reaches this one (pi-session-bus's work queue) asks for the
+  prompt's images on the event-bus channel `pi-images:attachments`
+  (`ATTACHMENTS_CHANNEL`): `{ text, cwd?, existing?, provide(images) }`.
+  `provide` is called synchronously with the new images only, and the paste
+  ends as on submit. Messages that extensions send are never given images, so
+  the replayed prompt is not attached twice.
 - **Cmd+V:** `super+v` (Cmd+V reported through the kitty keyboard protocol)
   and the empty bracketed paste that terminals send for an image-only clipboard
   both run Pi's clipboard paste, the same as `ctrl+v`. Under `herdr --remote`,

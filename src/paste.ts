@@ -22,6 +22,20 @@ const PASTE_KEY = "\x16";
 const EMPTY_BRACKETED_PASTE = "\x1b[200~\x1b[201~";
 const BRACKETED_PASTE = /^\x1b\[200~([\s\S]*)\x1b\[201~$/;
 
+/**
+ * Event-bus channel on which an extension that holds a user prompt back before Pi's input chain reaches this one
+ * (session-bus's work queue) asks for the images this extension would attach to that prompt. The request ends the
+ * paste state of the prompt like a submission; `provide` is called synchronously with the new images only.
+ */
+export const ATTACHMENTS_CHANNEL = "pi-images:attachments";
+export interface AttachmentRequest {
+  text: string;
+  cwd?: string;
+  /** Images the prompt already carries; equal images are not provided again. */
+  existing?: readonly ImageContent[];
+  provide(images: ImageContent[]): void;
+}
+
 export interface PastedImage { path: string; data: string; mimeType: string }
 
 /** Splits pasted text into shell-like words: quotes and backslash escapes, as terminals use for dropped files. */
@@ -229,19 +243,58 @@ export function registerPastedImages(pi: ExtensionAPI): void {
   });
   pi.on("session_shutdown", () => stop());
 
-  pi.on("input", (event, ctx) => {
-    if (event.source === "extension" || /^[!/]/.test(event.text.trimStart())) return { action: "continue" };
-    const paths = imagePathsInText(ctx.cwd, event.text, pastes);
+  /**
+   * Shell commands (`!`) and the slash commands Pi expands after input handlers: prompt templates and
+   * skills. Extension commands never reach input handlers, and other text that starts with `/`, such
+   * as the path of an image pasted into an empty editor, is sent as typed.
+   */
+  const isCommand = (text: string): boolean => {
+    const trimmed = text.trimStart();
+    if (trimmed.startsWith("!")) return true;
+    const name = /^\/(\S+)/.exec(trimmed)?.[1];
+    return name !== undefined && pi.getCommands().some((command) => command.name === name);
+  };
+
+  /** Image data → path of images provided through ATTACHMENTS_CHANNEL, for the transcript entry. */
+  const provided = new Map<string, string>();
+  /** The new images of a submitted prompt (none equal to `existing`); ends the paste state of the prompt. */
+  const attach = (dir: string, text: string, existing: readonly ImageContent[]) => {
+    const paths = imagePathsInText(dir, text, pastes);
     pastes.clear();
     showPreview([]);
+    const seen = new Set(existing.map((image) => image.data));
     const images: ImageContent[] = [];
+    const attached: string[] = [];
     for (const path of paths) {
       const image = readPastedImage(path);
-      if (image) images.push({ type: "image", data: image.data, mimeType: image.mimeType });
+      if (!image || seen.has(image.data)) continue;
+      seen.add(image.data);
+      images.push({ type: "image", data: image.data, mimeType: image.mimeType });
+      attached.push(path);
     }
+    return { images, paths: attached };
+  };
+
+  pi.on("input", (event, ctx) => {
+    if (event.source === "extension" || isCommand(event.text)) return { action: "continue" };
+    const existing = event.images ?? [];
+    const earlier = existing.flatMap((image) => provided.get(image.data) ?? []);
+    provided.clear();
+    const { images, paths } = attach(ctx.cwd, event.text, existing);
+    if (earlier.length || paths.length) submitted = [...earlier, ...paths];
     if (!images.length) return { action: "continue" };
-    submitted = paths.filter((path) => readPastedImage(path));
-    return { action: "transform", text: event.text, images: [...(event.images ?? []), ...images] };
+    return { action: "transform", text: event.text, images: [...existing, ...images] };
+  });
+
+  pi.events.on(ATTACHMENTS_CHANNEL, (data) => {
+    const request = data as Partial<AttachmentRequest> | null;
+    if (!request || typeof request.text !== "string" || typeof request.provide !== "function") return;
+    if (isCommand(request.text)) { request.provide([]); return; }
+    const { images, paths } = attach(typeof request.cwd === "string" ? request.cwd : cwd, request.text,
+      Array.isArray(request.existing) ? request.existing : []);
+    provided.clear();
+    images.forEach((image, i) => provided.set(image.data, paths[i]!));
+    request.provide(images);
   });
 
   // The entry follows the user message: it is persisted at that message's end, so append on the next one.
