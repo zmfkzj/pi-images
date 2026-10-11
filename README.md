@@ -3,8 +3,14 @@
 A Pi 1.0.0 image provider for the CLIProxyAPI gateway's OpenAI Images API.
 Node 22+ supplies fetch, FormData and Blob; there are no runtime dependencies.
 
-The model is **`cliproxyapi-images/gpt-image-2.5`**, separate from the chat
-extension's `cliproxyapi` provider so its refresh cannot unregister this model.
+Models are configured and selected as **`cliproxyapi/gpt-image-2.5`**
+(`provider/model`, see [Model settings](#model-settings)). In Pi's model
+registry they are registered as `cliproxyapi-images/gpt-image-2.5`, separate
+from the chat extension's `cliproxyapi` provider so its refresh cannot
+unregister them (and they cannot replace its chat models or credentials).
+Image models of other providers already registered in Pi (for example
+`openrouter/google/gemini-2.5-flash-image`) can be selected the same way,
+including as the default; they use their own provider's connection and auth.
 
 ## `generate_image` tool
 
@@ -22,8 +28,13 @@ and ask "make this pixel art".
   PNG, JPEG, WebP and GIF, up to 20 MiB each.
 - **Output:** saved to `path` (relative to the working directory; the extension
   follows the produced format) or to `<tmpdir>/pi-images/` by default.
-- Options: `background`, `size`, `quality`, and `model` (`provider/id` of any
-  registered image model; default `cliproxyapi-images/gpt-image-2.5`).
+- Options: `background`, `size`, `quality`, and `model` (`provider/model`;
+  default `defaultModel` from `image.models.json`, `cliproxyapi/gpt-image-2.5`).
+  `cliproxyapi/<model>` selects a model configured for CLIProxyAPI. Any other
+  name is looked up in Pi's registry as given, so `cliproxyapi-images/<model>`
+  and image models of other providers (e.g. `openrouter/<model>`) also work.
+  An unknown or non-image model fails with `Unknown image model ...` and the
+  list of available image models.
 
 ## Pasted images
 
@@ -53,7 +64,10 @@ and ask "make this pixel art".
 
 ## Codemode
 
-Image models do not appear in `/model`; codemode scripts can call them directly:
+Image models do not appear in `/model`; codemode scripts can call them directly.
+Codemode reads Pi's registry, so this package's models need the registry
+provider `cliproxyapi-images`, not the `cliproxyapi/...` name from
+`image.models.json` (other providers' models keep their own registry ids):
 
 ```js
 const model = await models.getModelOfType("image", "cliproxyapi-images", "gpt-image-2.5");
@@ -67,6 +81,105 @@ for (const block of result.output) if (block.type === "image") image(block);
 For SDK/extension use, export `createProviderConfig()` and register it with
 `runtime.registerProvider(PROVIDER_ID, createProviderConfig())`. The exported
 `generateImages(model, context, options)` also works directly.
+
+## Model settings
+
+The image models and the default model live in `image.models.json` files, not
+in code. One file is used, chosen when the extension loads:
+
+1. **`~/.pi/agent/image.models.json`** (your settings). The directory is
+   Pi's agent directory, so `PI_CODING_AGENT_DIR` moves it, the same as
+   `cliproxyapi.json`. When present it **replaces** the bundled file
+   completely. Nothing is merged, so list every model you want, including the
+   default.
+2. **`src/image.models.json`** in this package (the bundled defaults). It is
+   used only when the user file does not exist.
+
+To customize, copy the bundled file to `~/.pi/agent/image.models.json` and edit
+the copy. This keeps package updates from overwriting your changes. Format:
+
+```json
+{
+  "defaultModel": "cliproxyapi/gpt-image-2.5",
+  "models": [
+    { "id": "cliproxyapi/gpt-image-2.5", "name": "GPT Image 2.5", "input": ["text", "image"],
+      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }
+  ]
+}
+```
+
+- `models[].id`: full `provider/model` id, split at the first `/`.
+  - **`cliproxyapi/<model>`**: served by this package through the CLIProxyAPI
+    gateway with the credentials described in
+    [Connection and requests](#connection-and-requests). These models are
+    registered in Pi as `cliproxyapi-images/<model>`, and the **model** part
+    is sent as the request's `model`, unchanged and without the provider
+    prefix. It may contain further slashes: `cliproxyapi/vendor/model` sends
+    `vendor/model`.
+  - **Any other provider** (e.g. `openrouter/google/gemini-2.5-flash-image`):
+    a reference to an image model that is already registered in Pi under
+    exactly that `provider/model` id. This package does not register,
+    replace or connect to it; the request goes to that provider with its own
+    connection, auth (e.g. `OPENROUTER_API_KEY` or `/login`) and registry
+    metadata. The provider must therefore be installed (built-in or another
+    extension), have the model registered as an **image** model, and be
+    authenticated. No CLIProxyAPI connection is needed for these models.
+  - `cliproxyapi-images/<model>` is rejected here: it is this package's
+    internal registry id; write `cliproxyapi/<model>` instead. (The `model`
+    tool argument still accepts it.)
+  - The same model name may appear under several providers
+    (`cliproxyapi/gpt-image-2.5` and `other/gpt-image-2.5`); each id routes to
+    its own provider.
+- `name` (default: the model part), `input` (`text`/`image`, default both) and
+  `cost` (per-million-token rates for usage cost, default 0) are optional.
+  They are **validated for every entry but applied only to `cliproxyapi`
+  models**. Other providers' models always keep their registry name, input
+  types (whether references are accepted) and cost; you may omit these fields.
+- `defaultModel`: one of the full ids above, of any provider. It is the
+  `generate_image` default and the exported `DEFAULT_MODEL`. The exported
+  `MODEL_ID` is its model part.
+
+Example with another provider's model as the default (CLIProxyAPI kept for
+explicit use; drop its entry if you do not use the gateway at all, and nothing
+is registered under `cliproxyapi-images`):
+
+```json
+{
+  "defaultModel": "openrouter/google/gemini-2.5-flash-image",
+  "models": [
+    { "id": "openrouter/google/gemini-2.5-flash-image" },
+    { "id": "cliproxyapi/gpt-image-2.5", "name": "GPT Image 2.5" }
+  ]
+}
+```
+
+Whether a referenced model exists is checked when `generate_image` runs, not
+when the file loads (other extensions may register providers later): an
+unknown or non-image model fails with `Unknown image model <id>. Available: ...`,
+and a provider without auth fails with Pi's own error (e.g. `Provider is not
+configured: openrouter`).
+
+To switch the default, add the model to `models` and set `defaultModel` to its
+full id. The file is read when the extension loads, so restart Pi or run
+`/reload` after editing it. An unreadable, malformed or invalid file (including
+the user file) stops the extension from loading with an error that names the
+file and the problem. It never falls back to the bundled file silently.
+Explicit model names elsewhere (the codemode example above, `images.model` in
+`orche.config.json`, a `model` tool argument) do not follow `defaultModel`;
+update them yourself. Codemode and orche look models up in Pi's registry, so
+for CLIProxyAPI models they keep using `cliproxyapi-images/<model>`; other
+providers' models use the same id as in `image.models.json`.
+
+**Migrating from bare ids.** Earlier versions used bare ids such as
+`"gpt-image-2.5"`. These are now rejected with an error that names the file.
+Prefix the provider in **both** `models[].id` and `defaultModel`:
+
+```diff
+-  "defaultModel": "gpt-image-2.5",
+-  "models": [{ "id": "gpt-image-2.5", ... }]
++  "defaultModel": "cliproxyapi/gpt-image-2.5",
++  "models": [{ "id": "cliproxyapi/gpt-image-2.5", ... }]
+```
 
 ## Install
 
@@ -86,7 +199,14 @@ scope, so run `pi install` first:
 }
 ```
 
+orche resolves `images.model` in Pi's registry itself, so it takes the registry
+id `cliproxyapi-images/<model>`, not `cliproxyapi/<model>` (other providers'
+image models: their own `provider/model` id).
+
 ## Connection and requests
+
+This connection applies only to `cliproxyapi/<model>` entries; other providers'
+models use their own provider configuration in Pi.
 
 Resolution order (the Pi agent directory comes from `getAgentDir()`):
 

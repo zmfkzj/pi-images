@@ -2,14 +2,37 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AssistantImages, ImageModel, ImagesContext, ImagesOptions, Usage } from "@earendil-works/pi-ai";
 import { getAgentDir, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { CLIPROXYAPI_IMAGES_PROVIDER, CLIPROXYAPI_PROVIDER, isCliproxyapiModel, resolveModelSettings, splitModelId,
+  type ModelSettings } from "./models.ts";
 import { registerPastedImages } from "./paste.ts";
 import { createGenerateImageTool } from "./tool.ts";
 
 export { createGenerateImageTool, TOOL_NAME } from "./tool.ts";
 export { registerPastedImages } from "./paste.ts";
+export { CLIPROXYAPI_IMAGES_PROVIDER, CLIPROXYAPI_PROVIDER, isCliproxyapiModel, loadModelSettings, MODELS_CONFIG_FILE,
+  MODELS_CONFIG_PATH, parseModelSettings, resolveModelSettings, splitModelId, userModelsConfigPath } from "./models.ts";
+export type { ImageModelSettings, ModelSettings, ResolvedModelSettings } from "./models.ts";
 
-export const PROVIDER_ID = "cliproxyapi-images";
-export const MODEL_ID = "gpt-image-2.5";
+const RESOLVED_MODEL_SETTINGS = resolveModelSettings();
+/** File the model settings were loaded from: `~/.pi/agent/image.models.json` if present, else `src/image.models.json`. */
+export const MODEL_SETTINGS_PATH = RESOLVED_MODEL_SETTINGS.path;
+/** Image models and the default model, loaded from MODEL_SETTINGS_PATH when the extension loads. */
+export const MODEL_SETTINGS: ModelSettings = RESOLVED_MODEL_SETTINGS.settings;
+/**
+ * Settings provider served by this package (`cliproxyapi/<model>` in `image.models.json`).
+ * Entries of any other provider are looked up in Pi's image model registry as written.
+ */
+export const SETTINGS_PROVIDER = CLIPROXYAPI_PROVIDER;
+/**
+ * Pi registry provider id of this package's image models. It differs from SETTINGS_PROVIDER
+ * because `cliproxyapi` is owned by the CLIProxyAPI chat provider extension; registering
+ * image models under the same id would replace its models and credentials.
+ */
+export const PROVIDER_ID = CLIPROXYAPI_IMAGES_PROVIDER;
+/** Default image model as a full `provider/model` id (`defaultModel` in `image.models.json`). */
+export const DEFAULT_MODEL = MODEL_SETTINGS.defaultModel;
+/** Model part of DEFAULT_MODEL (for `cliproxyapi` defaults: the registered id and the request body's `model`). */
+export const MODEL_ID = splitModelId(DEFAULT_MODEL)!.modelId;
 export const IMAGE_API = "openai-images";
 export const DEFAULT_TIMEOUT_MS = 180_000;
 const DEFAULT_ORIGIN = "http://127.0.0.1:8317";
@@ -21,6 +44,11 @@ const ADAPTER_AUTH = "cliproxyapi-images-runtime-auth";
 export interface ConnectionOptions {
   agentDir?: string;
   env?: Record<string, string | undefined>;
+}
+
+export interface ProviderConfigOptions extends ConnectionOptions {
+  /** Image models to register. Default: MODEL_SETTINGS (the loaded `image.models.json`). */
+  modelSettings?: ModelSettings;
 }
 
 function object(value: unknown): Record<string, unknown> {
@@ -191,24 +219,41 @@ export function generateImages(model: ImageModel<string>, context: ImagesContext
   return generateWithConnection(model, context, options);
 }
 
-/** Register directly with runtime.registerProvider(PROVIDER_ID, createProviderConfig()). */
-export function createProviderConfig(options: ConnectionOptions = {}): ProviderConfig {
+/**
+ * Register directly with runtime.registerProvider(PROVIDER_ID, createProviderConfig()).
+ * Registers the `cliproxyapi/<model>` entries of the settings as PROVIDER_ID/<model>;
+ * entries of other providers are registry references and are not registered here.
+ */
+export function createProviderConfig(options: ProviderConfigOptions = {}): ProviderConfig {
+  const { modelSettings = MODEL_SETTINGS, ...connectionOptions } = options;
   let origin = DEFAULT_ORIGIN;
-  try { origin = resolveConnection(options).origin; } catch { /* Register even with missing/invalid connection settings. */ }
+  try { origin = resolveConnection(connectionOptions).origin; } catch { /* Register even with missing/invalid connection settings. */ }
   return {
     name: "CLIProxyAPI Images",
     baseUrl: `${origin}/v1`,
     apiKey: ADAPTER_AUTH,
-    models: [{ type: "image", id: MODEL_ID, name: "GPT Image 2.5", api: IMAGE_API,
-      baseUrl: `${origin}/v1`, input: ["text", "image"], output: ["image"],
-      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],
+    models: modelSettings.models.filter(isCliproxyapiModel).map((model) => ({
+      type: "image" as const, id: model.modelId, name: model.name, api: IMAGE_API,
+      baseUrl: `${origin}/v1`, input: [...model.input], output: ["image" as const], cost: { ...model.cost } })),
     images: { [IMAGE_API]: { generateImages: (model, context, requestOptions) =>
-      generateWithConnection(model, context, requestOptions, options) } },
+      generateWithConnection(model, context, requestOptions, connectionOptions) } },
   };
 }
 
+/**
+ * Settings full id (`cliproxyapi/<model>`) → Pi registry full id (`cliproxyapi-images/<model>`).
+ * Other providers need no alias: their settings id is their registry id.
+ */
+export function modelAliases(modelSettings: ModelSettings = MODEL_SETTINGS): Record<string, string> {
+  return Object.fromEntries(modelSettings.models.filter(isCliproxyapiModel)
+    .map((model) => [model.id, `${PROVIDER_ID}/${model.modelId}`]));
+}
+
 export default function gatewayImages(pi: ExtensionAPI): void {
-  pi.registerProvider(PROVIDER_ID, createProviderConfig());
-  pi.registerTool(createGenerateImageTool({ defaultModel: `${PROVIDER_ID}/${MODEL_ID}`, timeoutMs: DEFAULT_TIMEOUT_MS }));
+  // Settings that only reference other providers' registry models need no CLIProxyAPI
+  // connection; registering an empty provider would only add an unused, "configured" entry.
+  if (MODEL_SETTINGS.models.some(isCliproxyapiModel)) pi.registerProvider(PROVIDER_ID, createProviderConfig());
+  pi.registerTool(createGenerateImageTool({ defaultModel: DEFAULT_MODEL, modelAliases: modelAliases(),
+    timeoutMs: DEFAULT_TIMEOUT_MS }));
   registerPastedImages(pi);
 }

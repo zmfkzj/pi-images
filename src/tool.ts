@@ -11,7 +11,9 @@ export const TOOL_NAME = "generate_image";
 /** Reference images larger than this are rejected before upload. */
 export const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
 
-const parameters = Type.Object({
+/** Tool parameters; the `model` description names the configured default model. */
+function createParameters(defaultModel: string) {
+  return Type.Object({
   prompt: Type.String({ minLength: 1, description: "What to draw, or how to change the reference images." }),
   references: Type.Optional(Type.Array(Type.String({ minLength: 1 }), {
     description: "Input images to edit or use as references. Each entry is an image file path (absolute, ~/..., "
@@ -23,8 +25,10 @@ const parameters = Type.Object({
   background: Type.Optional(Type.Union([Type.Literal("transparent"), Type.Literal("opaque"), Type.Literal("auto")])),
   size: Type.Optional(Type.String({ description: "Requested size such as 1024x1024, 1536x1024, 1024x1536 or auto (the gateway may ignore it)." })),
   quality: Type.Optional(Type.Union([Type.Literal("low"), Type.Literal("medium"), Type.Literal("high"), Type.Literal("auto")])),
-  model: Type.Optional(Type.String({ description: "Image model as provider/id. Default: cliproxyapi-images/gpt-image-2.5." })),
-});
+  model: Type.Optional(Type.String({ description: `Image model as provider/id. Default: ${defaultModel}.` })),
+  });
+}
+type Parameters = ReturnType<typeof createParameters>;
 
 export interface SavedImage { path: string; mimeType: string; width?: number; height?: number }
 export interface GenerateImageDetails { model: string; images: SavedImage[]; references: string[]; elapsedMs: number }
@@ -32,6 +36,12 @@ export interface GenerateImageDetails { model: string; images: SavedImage[]; ref
 export interface GenerateImageToolOptions {
   /** Default image model as provider/id. */
   defaultModel: string;
+  /**
+   * Configured provider/id names that map to a different Pi registry provider/id
+   * (e.g. `cliproxyapi/gpt-image-2.5` → `cliproxyapi-images/gpt-image-2.5`).
+   * Other names are looked up in the registry as given.
+   */
+  modelAliases?: Readonly<Record<string, string>>;
   timeoutMs: number;
   /** Directory for results without an explicit path. Default: <tmpdir>/pi-images. */
   outputDir?: string;
@@ -136,7 +146,7 @@ function renderCall(args: { prompt?: string; references?: string[]; path?: strin
   return lines(text);
 }
 
-export function createGenerateImageTool(options: GenerateImageToolOptions): ToolDefinition<typeof parameters, GenerateImageDetails | undefined> {
+export function createGenerateImageTool(options: GenerateImageToolOptions): ToolDefinition<Parameters, GenerateImageDetails | undefined> {
   return {
     name: TOOL_NAME,
     label: "Generate image",
@@ -148,18 +158,20 @@ export function createGenerateImageTool(options: GenerateImageToolOptions): Tool
       "When the user asks to draw, create or edit a picture, use generate_image; pass the images they provided in references.",
       "Generation can take a few minutes. Reuse the saved path from a previous result as a reference to iterate on it.",
     ],
-    parameters,
+    parameters: createParameters(options.defaultModel),
     executionMode: "parallel",
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       const started = Date.now();
       signal?.throwIfAborted();
       const modelName = params.model?.trim() || options.defaultModel;
-      const slash = modelName.indexOf("/");
-      if (slash <= 0 || slash === modelName.length - 1) throw new Error(`Image model must be provider/id, got "${modelName}".`);
-      const model = ctx.modelRegistry.getModelOfType("image", modelName.slice(0, slash), modelName.slice(slash + 1));
+      const registryName = Object.hasOwn(options.modelAliases ?? {}, modelName) ? options.modelAliases![modelName]! : modelName;
+      const slash = registryName.indexOf("/");
+      if (slash <= 0 || slash === registryName.length - 1) throw new Error(`Image model must be provider/id, got "${modelName}".`);
+      const model = ctx.modelRegistry.getModelOfType("image", registryName.slice(0, slash), registryName.slice(slash + 1));
       if (!model) {
-        const known = ctx.modelRegistry.getModelsOfType("image").map((m) => `${m.provider}/${m.id}`);
-        throw new Error(`Unknown image model ${modelName}.${known.length ? ` Available: ${known.join(", ")}` : ""}`);
+        const known = [...Object.keys(options.modelAliases ?? {}),
+          ...ctx.modelRegistry.getModelsOfType("image").map((m) => `${m.provider}/${m.id}`)];
+        throw new Error(`Unknown image model ${modelName}.${known.length ? ` Available: ${[...new Set(known)].join(", ")}` : ""}`);
       }
       const references = params.references ?? [];
       const input: ImagesContext["input"] = [{ type: "text", text: params.prompt }, ...await loadReferences(references, ctx)];

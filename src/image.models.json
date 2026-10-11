@@ -1,0 +1,11 @@
+{
+  "defaultModel": "cliproxyapi/gpt-image-2.5",
+  "models": [
+    {
+      "id": "cliproxyapi/gpt-image-2.5",
+      "name": "GPT Image 2.5",
+      "input": ["text", "image"],
+      "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 }
+    }
+  ]
+}
