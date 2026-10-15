@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import type { AssistantImages, ImageModel, ImagesContext, ImagesOptions, Usage } from "@earendil-works/pi-ai";
-import { getAgentDir, type ExtensionAPI, type ProviderConfig } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ProviderConfig } from "@earendil-works/pi-coding-agent";
+import { DEFAULT_ORIGIN, firstString, object, resolveConnection, type ConnectionOptions } from "./connection.ts";
+import { registerImagesCommand } from "./doctor.ts";
 import { CLIPROXYAPI_IMAGES_PROVIDER, CLIPROXYAPI_PROVIDER, isCliproxyapiModel, resolveModelSettings, splitModelId,
   type ModelSettings } from "./models.ts";
 import { registerPastedImages } from "./paste.ts";
@@ -12,6 +12,9 @@ export { registerPastedImages } from "./paste.ts";
 export { CLIPROXYAPI_IMAGES_PROVIDER, CLIPROXYAPI_PROVIDER, isCliproxyapiModel, loadModelSettings, MODELS_CONFIG_FILE,
   MODELS_CONFIG_PATH, parseModelSettings, resolveModelSettings, splitModelId, userModelsConfigPath } from "./models.ts";
 export type { ImageModelSettings, ModelSettings, ResolvedModelSettings } from "./models.ts";
+export { connectionSources, normalizeOrigin, resolveConnection } from "./connection.ts";
+export type { ConnectionOptions, ConnectionSources } from "./connection.ts";
+export { createImagesDependencyProvider, registerImagesCommand } from "./doctor.ts";
 
 const RESOLVED_MODEL_SETTINGS = resolveModelSettings();
 /** File the model settings were loaded from: `~/.pi/agent/image.models.json` if present, else `src/image.models.json`. */
@@ -35,63 +38,14 @@ export const DEFAULT_MODEL = MODEL_SETTINGS.defaultModel;
 export const MODEL_ID = splitModelId(DEFAULT_MODEL)!.modelId;
 export const IMAGE_API = "openai-images";
 export const DEFAULT_TIMEOUT_MS = 180_000;
-const DEFAULT_ORIGIN = "http://127.0.0.1:8317";
 // Pi requires configured authentication before dispatching an image API. This is
 // NOT a credential: the adapter resolves the real key at request time and never
 // sends this marker to the gateway. It also lets missing-key errors reach callers.
 const ADAPTER_AUTH = "cliproxyapi-images-runtime-auth";
 
-export interface ConnectionOptions {
-  agentDir?: string;
-  env?: Record<string, string | undefined>;
-}
-
 export interface ProviderConfigOptions extends ConnectionOptions {
   /** Image models to register. Default: MODEL_SETTINGS (the loaded `image.models.json`). */
   modelSettings?: ModelSettings;
-}
-
-function object(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown> : {};
-}
-
-function readObject(path: string): Record<string, unknown> {
-  try { return object(JSON.parse(readFileSync(path, "utf8"))); }
-  catch { return {}; } // Never include parser errors: they can quote credentials.
-}
-
-function firstString(...values: unknown[]): string | undefined {
-  for (const value of values) if (typeof value === "string" && value.trim()) return value.trim();
-  return undefined;
-}
-
-export function normalizeOrigin(baseUrl: string): string {
-  try {
-    const url = new URL(/^[a-z][a-z\d+.-]*:\/\//i.test(baseUrl) ? baseUrl : `http://${baseUrl}`);
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error();
-    return url.origin;
-  } catch {
-    throw new Error("Invalid CLIProxyAPI base URL; set CLIPROXYAPI_BASE_URL or cliproxyapi.json baseUrl.");
-  }
-}
-
-/** Same source precedence as the chat extension; values remain in memory only. */
-export function resolveConnection(options: ConnectionOptions = {}): { origin: string; apiKey?: string } {
-  const agentDir = options.agentDir ?? getAgentDir();
-  const env = options.env ?? process.env;
-  const config = readObject(join(agentDir, "cliproxyapi.json"));
-  const entry = object(readObject(join(agentDir, "auth.json")).cliproxyapi);
-  const authKey = entry.type === "oauth" ? firstString(entry.access)
-    : entry.type === "api_key" ? firstString(entry.key) : undefined;
-  let meta: Record<string, unknown> = {};
-  if (authKey && entry.type === "oauth" && typeof entry.refresh === "string") {
-    try { meta = object(JSON.parse(entry.refresh)); } catch { /* Older refresh tokens have no URL. */ }
-  }
-  return {
-    origin: normalizeOrigin(firstString(env.CLIPROXYAPI_BASE_URL, config.baseUrl, meta.baseUrl, DEFAULT_ORIGIN)!),
-    apiKey: firstString(env.CLIPROXYAPI_API_KEY, config.apiKey, authKey),
-  };
 }
 
 function redact(message: string, ...keys: (string | undefined)[]): string {
@@ -250,6 +204,8 @@ export function modelAliases(modelSettings: ModelSettings = MODEL_SETTINGS): Rec
 }
 
 export default function gatewayImages(pi: ExtensionAPI): void {
+  // `/images doctor|install-deps` and the umbrella's dependency provider come first, before any optional path.
+  registerImagesCommand(pi);
   // Settings that only reference other providers' registry models need no CLIProxyAPI
   // connection; registering an empty provider would only add an unused, "configured" entry.
   if (MODEL_SETTINGS.models.some(isCliproxyapiModel)) pi.registerProvider(PROVIDER_ID, createProviderConfig());

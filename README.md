@@ -233,6 +233,38 @@ asset dimensions. The adapter forwards abort, timeout (default 180 seconds),
 fetch, headers and payload/response callbacks. POSTs are not automatically
 retried to avoid duplicate billing/generation.
 
+## `/images doctor` and `/images install-deps`
+
+`/images doctor` checks what image generation needs and tells you what to do
+when something is wrong (the oh-my-pi-extensions umbrella runs the same check
+from `/oh-my-pi doctor`). It is read-only:
+
+- **image model settings**: the user `image.models.json` (or the bundled
+  defaults) re-read and validated; invalid files are an error naming the file.
+- **image model `<provider>/<model>`** (other providers only): registered in
+  Pi's image model registry, else an error (install/enable that provider's
+  extension or change the setting). These models need no CLIProxyAPI.
+- Only when a `cliproxyapi/<model>` entry is configured:
+  - **cliproxyapi.json**: an error if the file exists but is not a JSON object
+    (its `baseUrl`/`apiKey` are then ignored);
+  - **CLIProxyAPI base URL**: resolved as above; shows the origin and its
+    source, an invalid URL is an error (its value is not shown);
+  - **CLIProxyAPI credentials**: "set" with its source or "not set" (manual:
+    `/login CLIProxyAPI`, `CLIPROXYAPI_API_KEY` or `cliproxyapi.json` `apiKey`).
+    The internal authentication marker never counts as a credential. Keys are
+    never shown;
+  - **CLIProxyAPI image gateway**: one `GET <origin>/v1/models` with a 3 s
+    timeout (never an image request). 200 is ok; 401/403 with a key is manual
+    (log in again or fix the key); connection refused or unknown host is an
+    error (start CLIProxyAPI or fix the base URL); a timeout or other network
+    failure is unverified, with a `curl` command to check by hand.
+
+`/images install-deps` installs nothing: this package has no automatically
+installable dependency (it needs only Pi and Node.js; the CLIProxyAPI service
+and its credentials are set up by you). It says so, re-runs the check and
+reports every problem as a manual action. Both subcommands work on every
+platform Pi supports.
+
 ## Checks
 
 ```sh

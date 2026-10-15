@@ -36,7 +36,9 @@ describe("provider registration and credentials", () => {
     const registerProvider = vi.fn();
     const registerTool = vi.fn();
     const on = vi.fn();
-    gatewayImages({ registerProvider, registerTool, on, registerEntryRenderer: vi.fn(), events: { on: vi.fn() } } as unknown as ExtensionAPI);
+    const registerCommand = vi.fn();
+    gatewayImages({ registerProvider, registerTool, on, registerEntryRenderer: vi.fn(), registerCommand, events: { on: vi.fn() } } as unknown as ExtensionAPI);
+    expect(registerCommand.mock.calls.map((call) => call[0])).toEqual(["images"]);
     expect(on.mock.calls.map((call) => call[0])).toContain("input");
     expect(registerProvider.mock.calls[0][0]).toBe(PROVIDER_ID);
     expect(registerTool.mock.calls[0][0].name).toBe("generate_image");

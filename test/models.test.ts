@@ -174,7 +174,7 @@ async function loadExtension(raw: unknown) {
   const index = await import("../src/index.ts");
   const registerProvider = vi.fn();
   const registerTool = vi.fn();
-  index.default({ registerProvider, registerTool, on: vi.fn(), registerEntryRenderer: vi.fn(), events: { on: vi.fn() } } as unknown as ExtensionAPI);
+  index.default({ registerProvider, registerTool, on: vi.fn(), registerEntryRenderer: vi.fn(), registerCommand: vi.fn(), events: { on: vi.fn() } } as unknown as ExtensionAPI);
   expect(registerTool).toHaveBeenCalledTimes(1);
   return { index, registerProvider, tool: registerTool.mock.calls[0][0] as ToolDefinition };
 }
@@ -357,7 +357,7 @@ describe("settings reach real model use", () => {
 
     const registerProvider = vi.fn();
     const registerTool = vi.fn();
-    index.default({ registerProvider, registerTool, on: vi.fn(), registerEntryRenderer: vi.fn(), events: { on: vi.fn() } } as unknown as ExtensionAPI);
+    index.default({ registerProvider, registerTool, on: vi.fn(), registerEntryRenderer: vi.fn(), registerCommand: vi.fn(), events: { on: vi.fn() } } as unknown as ExtensionAPI);
     expect(registerProvider).toHaveBeenCalledTimes(1);
     expect(registerProvider.mock.calls[0][0]).toBe("cliproxyapi-images");
     const config = registerProvider.mock.calls[0][1] as ProviderConfig;
