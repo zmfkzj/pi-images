@@ -5,10 +5,12 @@ import { registerImagesCommand } from "./doctor.ts";
 import { CLIPROXYAPI_IMAGES_PROVIDER, CLIPROXYAPI_PROVIDER, isCliproxyapiModel, resolveModelSettings, splitModelId,
   type ModelSettings } from "./models.ts";
 import { registerPastedImages } from "./paste.ts";
+import { registerTerminalImageRefs } from "./terminal-refs.ts";
 import { createGenerateImageTool } from "./tool.ts";
 
 export { createGenerateImageTool, TOOL_NAME } from "./tool.ts";
 export { registerPastedImages } from "./paste.ts";
+export { MARKER_CELL, MARKER_SCHEME, MARKER_VERSION, markersEnabled, markerUri, registerTerminalImageRefs } from "./terminal-refs.ts";
 export { CLIPROXYAPI_IMAGES_PROVIDER, CLIPROXYAPI_PROVIDER, isCliproxyapiModel, loadModelSettings, MODELS_CONFIG_FILE,
   MODELS_CONFIG_PATH, parseModelSettings, resolveModelSettings, splitModelId, userModelsConfigPath } from "./models.ts";
 export type { ImageModelSettings, ModelSettings, ResolvedModelSettings } from "./models.ts";
@@ -212,4 +214,5 @@ export default function gatewayImages(pi: ExtensionAPI): void {
   pi.registerTool(createGenerateImageTool({ defaultModel: DEFAULT_MODEL, modelAliases: modelAliases(),
     timeoutMs: DEFAULT_TIMEOUT_MS }));
   registerPastedImages(pi);
+  registerTerminalImageRefs(pi);
 }

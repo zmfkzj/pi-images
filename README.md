@@ -62,6 +62,60 @@ and ask "make this pixel art".
   both run Pi's clipboard paste, the same as `ctrl+v`. Under `herdr --remote`,
   herdr consumes the empty paste itself and bridges the image.
 
+## Images in the herdr web terminal
+
+herdr's attach stream, and so herdr-web-ui's terminal, carries text, cursor and
+OSC 8 hyperlinks but drops Kitty graphics (herdr 0.9.5). So that tool-result
+images Pi shows natively can also appear inline in that web terminal (local or
+remote PC), the extension writes a **terminal image reference** next to each
+native Kitty image. The web terminal draws the image at that place; native
+rendering is unchanged.
+
+- **When:** in the interactive TUI, when Pi's image protocol is Kitty and Pi
+  runs in a herdr pane (`TERM_PROGRAM=herdr`, also inside `herdr --remote`).
+  `PI_IMAGES_TERMINAL_REFS=0` turns it off, `=1` turns it on outside herdr
+  (still Kitty only). Elsewhere the rendered output is byte-identical.
+- **Which images:** only images of tool results on the current branch of the
+  current session (`read`, `generate_image`, MCP and other tools; not nested
+  `ctx.executeTool()` results). Paste previews, the `pasted-images` transcript
+  entry and other images get no reference, because the web side serves only
+  stored tool-result images.
+- **Marker (contract v1, agreed with herdr-web-ui):** on each image row
+  `y = 1 … r-1` (only `y = 0` for a one-row image), the cell right after the
+  image, column `left + c`, holds `U+2800` (a blank glyph) wrapped in an OSC 8
+  link:
+
+  ```
+  ESC ] 8 ; ; x-pi-image:v1?s=<session id>&ref=<pi:toolCallId:n>&h=<32 hex>&c=<cols>&r=<rows>&y=<row> ESC \  U+2800  ESC ] 8 ; ; ESC \
+  ```
+
+  `s` is the session id (the JSONL header id), `ref` (URL-encoded) is the web
+  endpoint's existing image ref, with `n` counting the result's image blocks
+  that have base64 data and a PNG/JPEG/GIF/WebP MIME type, `h` is the first 32
+  hex characters of SHA-256 over the decoded bytes stored in the session (not
+  the Kitty PNG conversion), `c`×`r` the native placement in cells. URIs are
+  at most 512 characters; there are no paths, URLs or image bytes. Row 0 of a
+  taller image carries no marker because fullscreen Pi moves the cropped image
+  line to the first visible row when the image is scrolled partly out of view.
+- **Web side (herdr-web-ui, not this package):** records each marker at the
+  OSC 8 cursor position, keeps it only while that cell still reads `U+2800`
+  (erased or overwritten cells drop it), computes the image at
+  `(x - c, row - y)`, fetches `ref` through its authenticated, pane-scoped
+  `/api/pane/conversation/image` (per machine for remote PCs) with the session
+  `s`, and draws nothing unless the pane's current session is `s`, the ref is
+  on its active branch and the bytes match `h`.
+- **Limits:** when the same image bytes are the result of several tool calls,
+  every copy names the newest call (same digest, same picture). After Pi quits,
+  the transcript it leaves on the screen keeps its markers, but the web side no
+  longer resolves them because the pane no longer runs that session. Image
+  rows that have left herdr's screen (no scrollback in the attach) are not
+  drawn; partly visible images are drawn from their remaining rows.
+
+The only hook that sees every native image is pi-tui's `Image` component, which
+Pi and its extensions share; the extension wraps `Image.prototype.render` once
+per process; while no session provides markers, the wrapper returns Pi's own
+render result unchanged. Checks: `test/terminal-refs.test.ts`.
+
 ## Codemode
 
 Image models do not appear in `/model`; codemode scripts can call them directly.
