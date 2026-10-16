@@ -89,9 +89,13 @@ rendering is unchanged.
   ESC ] 8 ; ; x-pi-image:v1?s=<session id>&ref=<pi:toolCallId:n>&h=<32 hex>&c=<cols>&r=<rows>&y=<row> ESC \  U+2800  ESC ] 8 ; ; ESC \
   ```
 
-  `s` is the session id (the JSONL header id), `ref` (URL-encoded) is the web
-  endpoint's existing image ref, with `n` counting the result's image blocks
-  that have base64 data and a PNG/JPEG/GIF/WebP MIME type, `h` is the first 32
+  `s` is the session id (the JSONL header id), `ref` is the web endpoint's
+  existing image ref, with `n` counting the result's image blocks
+  that have base64 data and a PNG/JPEG/GIF/WebP MIME type. The tool call id
+  in it is opaque and provider-specific (Responses-style providers store
+  `call_…|fc_…`), so `s` and `ref` are percent-encoded strictly (RFC 3986:
+  everything but `A-Z a-z 0-9 - . _ ~`) and the query never holds other
+  characters than `A-Z a-z 0-9 - . _ ~ % : = &`. `h` is the first 32
   hex characters of SHA-256 over the decoded bytes stored in the session (not
   the Kitty PNG conversion), `c`×`r` the native placement in cells. URIs are
   at most 512 characters; there are no paths, URLs or image bytes. Row 0 of a

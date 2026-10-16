@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Image, resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { Image, resetCapabilitiesCache, setCapabilities, setImageTranscoder, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addMarkers, ImageRefIndex, imageDigest, installMarkerProvider, kittyPlacement, MARKER_CELL, markersEnabled, markerUri,
@@ -10,18 +10,29 @@ import {
 // 4x2 PNG and 1x1 PNG, generated for these tests.
 const WIDE = "iVBORw0KGgoAAAANSUhEUgAAAAQAAAACCAIAAADwyuo0AAAAEElEQVR4nGP8z4AATEhsBgAZNQEDGy9LEgAAAABJRU5ErkJggg==";
 const DOT = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+// 6x4 JPEG, GIF and WebP (PIL), the non-PNG types the web endpoint serves; Kitty gets them converted to PNG.
+const JPEG = "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAYEBQYFBAYGBQYHBwYIChAKCgkJChQODwwQFxQYGBcUFhYaHSUfGhsjHBYWICwgIyYnKSopGR8tMC0oMCUoKSj/2wBDAQcHBwoIChMKChMoGhYaKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCj/wAARCAAEAAYDASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwDgKKKK+eP2E//Z";
+const GIF = "R0lGODdhBgAEAIEAAMgeHgAAAAAAAAAAACwAAAAABgAEAAAICwABCBxIsKDBgQEBADs=";
+const WEBP = "UklGRjoAAABXRUJQVlA4IC4AAACwAQCdASoGAAQAAUAmJaACdLoABDAAAP7x3I/4DdfFtMv/vYL/3YL/3YL/WwAA";
+/** Tool call id shapes Pi stores: Responses-style providers (here via cliproxyapi) join two ids with `|`. */
+const RESPONSES_ID = "call_y5Gh9z6NSxziUyBf7K4umrQV|fc_0fddae98c8d2a917016ad1bd4060f487d08a4bf4a4fde816c9";
+const TOOLU_ID = "toolu_01LDmcnpkhPXRBeUZVheErcM|fc_0123456789abcdef0123456789abcdef0123456789abcdef01";
 const KITTY_CAPS = { images: "kitty" as const, trueColor: true, hyperlinks: true };
 const fallbackTheme = { fallbackColor: (text: string) => text };
 
-/** The web consumer's strict parser (herdr-web-ui contract v1), used to check what we emit. */
+/**
+ * The web consumer's strict parser (herdr-web-ui contract v1, shared/terminal-images.ts), used to check what
+ * we emit: query charset, six keys once each, pi's session id rule, and `ref` = `pi:<id>:<n>` with an opaque
+ * id of 1..1024 printable non-space ASCII characters (parsePiImageRef: the last colon separates n).
+ */
 function parseMarker(uri: string) {
   const match = /^x-pi-image:v1\?(.*)$/.exec(uri);
-  if (!match) return undefined;
+  if (!match || uri.length > MAX_MARKER_URI || !/^[A-Za-z0-9._~%:=&-]+$/.test(match[1]!)) return undefined;
   const params = new URLSearchParams(match[1]);
   const keys = [...params.keys()];
   if (keys.length !== 6 || new Set(keys).size !== 6 || !["s", "ref", "h", "c", "r", "y"].every((key) => params.has(key))) return undefined;
   const fields = { s: params.get("s")!, ref: params.get("ref")!, h: params.get("h")!, c: +params.get("c")!, r: +params.get("r")!, y: +params.get("y")! };
-  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(fields.s) || !/^pi:[A-Za-z0-9_:.\-]{1,128}:\d{1,3}$/.test(fields.ref) || !/^[0-9a-f]{32}$/.test(fields.h)) return undefined;
+  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(fields.s) || !/^pi:[\x21-\x7e]{1,1024}:\d{1,3}$/.test(fields.ref) || !/^[0-9a-f]{32}$/.test(fields.h)) return undefined;
   if (!(fields.c >= 1 && fields.c <= 1000 && fields.r >= 1 && fields.r <= 1000 && fields.y >= 0 && fields.y < fields.r)) return undefined;
   return fields;
 }
@@ -93,6 +104,23 @@ describe("refs and index", () => {
     const uri = markerUri({ session: "01a142f0-cec2-7551-9aed-c54190245745", ref: "pi:toolu_01:Ab.c-d:2", digest: "0".repeat(32), cols: 60, rows: 19, row: 3 });
     expect(uri).toBe("x-pi-image:v1?s=01a142f0-cec2-7551-9aed-c54190245745&ref=pi%3Atoolu_01%3AAb.c-d%3A2&h=00000000000000000000000000000000&c=60&r=19&y=3");
     expect(parseMarker(uri)).toEqual({ s: "01a142f0-cec2-7551-9aed-c54190245745", ref: "pi:toolu_01:Ab.c-d:2", h: "0".repeat(32), c: 60, r: 19, y: 3 });
+  });
+
+  it("keeps opaque tool call ids, including Responses-style `call_…|fc_…` ids, inside the marker charset", () => {
+    for (const id of [RESPONSES_ID, TOOLU_ID, "weird!'()*~ id/+=?&#", "ид:1"]) {
+      const ref = `pi:${id}:0`;
+      const uri = markerUri({ session: "01a135da-d28a-7523-a034-93c7938f8304", ref, digest: "a".repeat(32), cols: 56, rows: 30, row: 1 });
+      expect(uri.length).toBeLessThanOrEqual(MAX_MARKER_URI);
+      expect(uri).toMatch(/^x-pi-image:v1\?[A-Za-z0-9._~%:=&-]+$/);
+      expect(new URLSearchParams(uri.slice(uri.indexOf("?") + 1)).get("ref")).toBe(ref);
+      // not dropped by the line-level safety check
+      expect(markersIn(addMarkers([`\x1b_Ga=T,f=100,q=2,C=1,c=4,r=2,i=7;${DOT}\x1b\\`, ""], () => uri)!)).toHaveLength(1);
+    }
+    const live = markerUri({ session: "01a135da-d28a-7523-a034-93c7938f8304", ref: `pi:${RESPONSES_ID}:0`, digest: "299eb06818ec04fb1cacb2494cad94e3", cols: 56, rows: 30, row: 1 });
+    expect(live).toBe("x-pi-image:v1?s=01a135da-d28a-7523-a034-93c7938f8304&ref=pi%3Acall_y5Gh9z6NSxziUyBf7K4umrQV%7Cfc_0fddae98c8d2a917016ad1bd4060f487d08a4bf4a4fde816c9%3A0"
+      + "&h=299eb06818ec04fb1cacb2494cad94e3&c=56&r=30&y=1");
+    expect(parseMarker(live)?.ref).toBe(`pi:${RESPONSES_ID}:0`);
+    expect(markerUri({ session: "s", ref: "pi:a(1)*:0", digest: "a".repeat(32), cols: 1, rows: 1, row: 0 })).toContain("ref=pi%3Aa%281%29%2A%3A0");
   });
 });
 
@@ -174,6 +202,28 @@ describe("Pi image components", () => {
       h: imageDigest(WIDE), c: placement.cols, r: placement.rows, y: marker.row });
     expect(render(image)).toBe(lines);
     expect(markersIn(render(image))).toHaveLength(markers.length);
+  });
+
+  it("marks stored JPEG/GIF/WebP read results with Responses-style ids, digesting the stored bytes, not Kitty's PNG", () => {
+    // Pi registers a real transcoder at startup; a fixed PNG stands in for its output here
+    setImageTranscoder(() => WIDE);
+    cleanup.push(() => setImageTranscoder(undefined));
+    for (const [data, mimeType] of [[JPEG, "image/jpeg"], [GIF, "image/gif"], [WEBP, "image/webp"]] as const) {
+      // what the session JSONL holds for Pi's read tool: a text block, then the image
+      const emit = start([toolResult(RESPONSES_ID, [{ type: "text", text: `Read image file [${mimeType}]` }, { type: "image", data, mimeType }])]);
+      const lines = render(new Image(data, mimeType, fallbackTheme, { maxWidthCells: 20 }));
+      expect(lines[0]).toContain(`;${WIDE}`); // Kitty receives the PNG conversion
+      const placement = kittyPlacement(lines[0]!)!;
+      const markers = markersIn(lines);
+      expect(markers.map((m) => m.row)).toEqual(Array.from({ length: placement.rows - 1 }, (_, i) => i + 1));
+      for (const marker of markers) {
+        expect(marker.fields).toEqual({ s: "01a142f0-cec2-7551-9aed-c54190245745", ref: `pi:${RESPONSES_ID}:0`, h: imageDigest(data),
+          c: placement.cols, r: placement.rows, y: marker.row });
+        expect(marker.uri).toContain("%7Cfc_");
+      }
+      expect(imageDigest(data)).not.toBe(imageDigest(WIDE));
+      emit("session_shutdown", { reason: "quit" });
+    }
   });
 
   it("keeps native output for images that are not stored tool results, outside herdr, and after shutdown", () => {

@@ -104,8 +104,16 @@ export function imageDigest(data: string): string {
   return createHash("sha256").update(Buffer.from(data, "base64")).digest("hex").slice(0, 32);
 }
 
+/**
+ * Percent-encodes everything outside RFC 3986 unreserved characters (encodeURIComponent leaves `!'()*`).
+ * Tool call ids are opaque and provider-specific (e.g. `call_…|fc_…` from Responses-style providers), so
+ * every id must still give a URI inside the marker's safe character set instead of losing its marker.
+ */
+const encodeQueryValue = (value: string) =>
+  encodeURIComponent(value).replace(/[!'()*]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+
 export function markerUri(fields: { session: string; ref: string; digest: string; cols: number; rows: number; row: number }): string {
-  return `${MARKER_SCHEME}:${MARKER_VERSION}?s=${encodeURIComponent(fields.session)}&ref=${encodeURIComponent(fields.ref)}`
+  return `${MARKER_SCHEME}:${MARKER_VERSION}?s=${encodeQueryValue(fields.session)}&ref=${encodeQueryValue(fields.ref)}`
     + `&h=${fields.digest}&c=${fields.cols}&r=${fields.rows}&y=${fields.row}`;
 }
 
