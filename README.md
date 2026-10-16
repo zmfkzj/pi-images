@@ -61,6 +61,21 @@ and ask "make this pixel art".
   and the empty bracketed paste that terminals send for an image-only clipboard
   both run Pi's clipboard paste, the same as `ctrl+v`. Under `herdr --remote`,
   herdr consumes the empty paste itself and bridges the image.
+- **In herdr (and its web terminal):** inside a herdr pane (`TERM_PROGRAM=herdr`)
+  the draft preview and the transcript entry are drawn as text cells: upper half
+  blocks (`▀`) with the pixel colors as foreground/background, two pixel rows per
+  cell row, up to 60×10 cells for the draft and 60×15 in the transcript. herdr's
+  attach stream, and so herdr-web-ui's terminal, drops Kitty graphics, and the
+  terminal image references below serve only stored tool-result images, so Pi's
+  native image would leave the label above blank rows there. The cells are a
+  coarse thumbnail (about 2 pixels per cell), also in herdr's own client. Pi
+  scales and converts the file first (PNG, JPEG, WebP, GIF); the cells appear
+  once that finishes (a few hundred ms for a large screenshot, decoded once per
+  file), and a file Pi cannot decode falls back to Pi's own image.
+  `PI_IMAGES_CELL_PREVIEWS=0` keeps Pi's image inside herdr, `=1` uses cells
+  elsewhere. It is read at session start, so `/reload` applies it; an exported
+  variable needs a Pi restart. Elsewhere the previews are unchanged. Checks:
+  `test/cell-preview.test.ts`, `test/paste.test.ts`.
 
 ## Images in the herdr web terminal
 

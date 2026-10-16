@@ -5,11 +5,14 @@ import { fileURLToPath } from "node:url";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Image, isKeyRelease, matchesKey, Text, type Component } from "@earendil-works/pi-tui";
+import { CellImage, cellPreviewsEnabled } from "./cell-preview.ts";
 import { MAX_REFERENCE_BYTES, sniffImageMime } from "./tool.ts";
 
 /** Session entry type that shows the images of a submitted message in the transcript. */
 export const PASTED_IMAGES_ENTRY = "pasted-images";
 const WIDGET_KEY = "pasted-images";
+/** A zero-line widget below the editor: its TUI redraws transcript previews whose cells finished decoding. */
+const RENDER_HOOK_KEY = "pasted-images-render";
 const MAX_IMAGES = 8;
 const MAX_PASTE_LENGTH = 8192;
 /** Pi's own Ctrl+V reads the clipboard asynchronously, so the editor is checked again for a while. */
@@ -144,8 +147,12 @@ export function readPastedImage(path: string): PastedImage | undefined {
   return image;
 }
 
-/** A column of image previews; files that are gone are listed by path. */
-export function imagesComponent(paths: readonly string[], theme: Theme, maxHeightCells: number): Component {
+/**
+ * A column of image previews; files that are gone are listed by path. With `cells`, images are drawn as text
+ * cells (see cell-preview.ts) instead of terminal graphics, and `cells.requestRender` redraws once decoded.
+ */
+export function imagesComponent(paths: readonly string[], theme: Theme, maxHeightCells: number,
+  cells?: { requestRender: () => void }): Component {
   const container = new Container();
   for (const path of paths) {
     const image = readPastedImage(path);
@@ -154,8 +161,11 @@ export function imagesComponent(paths: readonly string[], theme: Theme, maxHeigh
       continue;
     }
     container.addChild(new Text(theme.fg("dim", `image ${basename(path)}`), 1, 0));
-    container.addChild(new Image(image.data, image.mimeType, { fallbackColor: (text) => theme.fg("dim", text) },
-      { maxWidthCells: 60, maxHeightCells, filename: basename(path) }));
+    const native = () => new Image(image.data, image.mimeType, { fallbackColor: (text) => theme.fg("dim", text) },
+      { maxWidthCells: 60, maxHeightCells, filename: basename(path) });
+    container.addChild(cells
+      ? new CellImage(image, { maxWidthCells: 60, maxHeightCells, requestRender: cells.requestRender, fallback: native })
+      : native());
   }
   return container;
 }
@@ -172,26 +182,32 @@ export function clipboardPasteKey(data: string): string | undefined {
 
 /**
  * Shows pasted images right away above the editor, attaches them to the submitted message so the
- * model sees them without a read call, and keeps them visible in the transcript.
+ * model sees them without a read call, and keeps them visible in the transcript. Inside a herdr pane
+ * (or with PI_IMAGES_CELL_PREVIEWS=1) the previews are drawn as text cells, which herdr's web terminal shows.
  */
-export function registerPastedImages(pi: ExtensionAPI): void {
+export function registerPastedImages(pi: ExtensionAPI, options: { env?: NodeJS.ProcessEnv } = {}): void {
   /** Pasted text → image paths, for the message being written. */
   const pastes = new Map<string, string[]>();
   let ui: ExtensionContext["ui"] | undefined;
   let cwd = process.cwd();
   let unsubscribe: (() => void) | undefined;
-  let timers: ReturnType<typeof setTimeout>[] = [];
+  /** Rescans while Pi's clipboard paste may still insert a path; typing does not cancel them. */
+  let retries: ReturnType<typeof setTimeout>[] = [];
+  let keyScan: ReturnType<typeof setTimeout> | undefined;
   let shown = "";
   /** Images of the submitted message, rendered once Pi has shown that message. */
   let submitted: string[] | undefined;
   let pendingEntry: string[] | undefined;
+  let cells = false;
+  let renderHook: (() => void) | undefined;
 
   const showPreview = (paths: string[]) => {
     const key = paths.join("\n");
     if (!ui || key === shown) return;
     shown = key;
     if (!paths.length) ui.setWidget(WIDGET_KEY, undefined);
-    else ui.setWidget(WIDGET_KEY, (_tui, theme) => imagesComponent(paths, theme, 10));
+    else ui.setWidget(WIDGET_KEY, (tui, theme) => imagesComponent(paths, theme, 10,
+      cells ? { requestRender: () => tui.requestRender() } : undefined));
   };
   const scan = () => {
     if (!ui) return;
@@ -199,16 +215,24 @@ export function registerPastedImages(pi: ExtensionAPI): void {
     for (const pasted of pastes.keys()) if (!text.includes(pasted)) pastes.delete(pasted);
     showPreview(imagePathsInText(cwd, text, pastes));
   };
-  const scheduleScans = (delays: readonly number[]) => {
-    for (const timer of timers) clearTimeout(timer);
-    timers = delays.map((delay) => setTimeout(scan, delay));
+  const scheduleRetries = () => {
+    for (const timer of retries) clearTimeout(timer);
+    retries = RESCAN_DELAYS_MS.map((delay) => setTimeout(scan, delay));
+  };
+  const scheduleScan = () => {
+    clearTimeout(keyScan);
+    keyScan = setTimeout(scan, 0);
   };
   const stop = () => {
     unsubscribe?.();
     unsubscribe = undefined;
-    for (const timer of timers) clearTimeout(timer);
-    timers = [];
+    for (const timer of retries) clearTimeout(timer);
+    retries = [];
+    clearTimeout(keyScan);
+    keyScan = undefined;
     ui?.setWidget(WIDGET_KEY, undefined);
+    if (renderHook) ui?.setWidget(RENDER_HOOK_KEY, undefined);
+    renderHook = undefined;
     ui = undefined;
     shown = "";
     pastes.clear();
@@ -220,24 +244,35 @@ export function registerPastedImages(pi: ExtensionAPI): void {
   };
 
   pi.registerEntryRenderer<{ paths?: string[] }>(PASTED_IMAGES_ENTRY, (entry, _options, theme) =>
-    entry.data?.paths?.length ? imagesComponent(entry.data.paths, theme, 15) : undefined);
+    entry.data?.paths?.length
+      ? imagesComponent(entry.data.paths, theme, 15, cells ? { requestRender: () => renderHook?.() } : undefined)
+      : undefined);
 
   pi.on("session_start", (_event, ctx) => {
     stop();
     if (!ctx.hasUI) return;
     ui = ctx.ui;
     cwd = ctx.cwd;
+    cells = cellPreviewsEnabled(options.env ?? process.env);
+    // Entry renderers get no TUI; a resumed transcript's previews decode after they were first drawn.
+    if (cells && ctx.mode === "tui") {
+      ctx.ui.setWidget(RENDER_HOOK_KEY, (tui) => {
+        renderHook = () => tui.requestRender();
+        return { render: () => [], invalidate: () => {} };
+      }, { placement: "belowEditor" });
+    }
     unsubscribe = ctx.ui.onTerminalInput((data) => {
       const key = clipboardPasteKey(data);
       if (key) {
-        scheduleScans(RESCAN_DELAYS_MS);
+        scheduleRetries();
         return { data: key };
       }
       const paste = BRACKETED_PASTE.exec(data)?.[1];
       const paths = paste === undefined ? undefined : pastedImagePaths(cwd, paste);
       if (paths) pastes.set(paste!.trim(), paths);
       // Ctrl+V itself also reads the clipboard asynchronously.
-      scheduleScans(paths || matchesKey(data, "ctrl+v") ? RESCAN_DELAYS_MS : [0]);
+      if (paths || matchesKey(data, "ctrl+v")) scheduleRetries();
+      else scheduleScan();
       return undefined;
     });
   });

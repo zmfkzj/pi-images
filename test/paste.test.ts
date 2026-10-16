@@ -3,8 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { Image, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ATTACHMENTS_CHANNEL, clipboardPasteKey, imagePathsInText, pastedImagePaths, registerPastedImages, splitPastedWords } from "../src/paste.ts";
+import { halvesPng } from "./png-fixture.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
 
@@ -62,7 +64,7 @@ describe("paste parsing", () => {
 });
 
 describe("registerPastedImages", () => {
-  function setup(commands: { name: string; source: string }[] = []) {
+  function setup(commands: { name: string; source: string }[] = [], options: { env?: NodeJS.ProcessEnv; mode?: string } = {}) {
     const handlers = new Map<string, (event: any, ctx: any) => any>();
     const appendEntry = vi.fn();
     let renderer: ((entry: any, options: any, theme: any) => any) | undefined;
@@ -74,12 +76,13 @@ describe("registerPastedImages", () => {
       getCommands: () => commands,
       events: { on: (channel: string, handler: (data: unknown) => void) => { channels.set(channel, handler); return () => channels.delete(channel); } },
     } as unknown as ExtensionAPI;
-    registerPastedImages(pi);
+    registerPastedImages(pi, { env: options.env ?? {} });
     let editorText = "";
     let input: ((data: string) => { data?: string } | undefined) | undefined;
     const setWidget = vi.fn();
     const ctx = {
       hasUI: true,
+      mode: options.mode,
       cwd: dir,
       ui: {
         onTerminalInput: (handler: typeof input) => { input = handler; return () => { input = undefined; }; },
@@ -230,5 +233,100 @@ describe("registerPastedImages", () => {
     setText(clip); // Pi's asynchronous clipboard read inserted the file
     vi.advanceTimersByTime(400);
     expect(setWidget).toHaveBeenLastCalledWith("pasted-images", expect.any(Function));
+  });
+
+  it("still picks up a clipboard image that Pi inserts while the user keeps typing, and drops it with its path", () => {
+    vi.useFakeTimers();
+    const { setWidget, type, setText } = setup();
+    const clip = join(dir, `pi-clipboard-${randomUUID()}.png`);
+    writeFileSync(clip, Buffer.from(PNG, "base64"));
+    type("\x16", "");
+    vi.advanceTimersByTime(50);
+    expect(type("a", "a")).toBeUndefined(); // typing goes on before the clipboard read finishes
+    vi.advanceTimersByTime(10);
+    expect(setWidget).not.toHaveBeenCalled();
+    setText(`a ${clip}`); // inserted after the last keystroke
+    vi.advanceTimersByTime(400);
+    expect(setWidget).toHaveBeenLastCalledWith("pasted-images", expect.any(Function));
+    type("\x7f", "a "); // the path is deleted again
+    vi.advanceTimersByTime(0);
+    expect(setWidget).toHaveBeenLastCalledWith("pasted-images", undefined);
+  });
+
+  describe("in a herdr pane (cell previews)", () => {
+    const herdr = { TERM_PROGRAM: "herdr" };
+    const theme = { fg: (_c: string, s: string) => s };
+    /** A red cell then a blue one: the picture itself, as colored half blocks. */
+    const PICTURE = /\x1b\[38;2;255;0;0m(?:\x1b\[48;2;255;0;0m)?\u2580.*\x1b\[38;2;0;0;255m(?:\x1b\[48;2;0;0;255m)?\u2580/;
+    const pictureRows = (lines: string[]) => lines.filter((line) => PICTURE.test(line)).length;
+    let screenshot: string;
+    beforeEach(() => {
+      screenshot = join(dir, "paste-20261016-222317-fc181c35.png");
+      writeFileSync(screenshot, halvesPng(300, 190));
+    });
+
+    it("shows the draft image while typing and the submitted image in the transcript, without Kitty graphics", async () => {
+      vi.useFakeTimers();
+      const { setWidget, appendEntry, emit, type, render } = setup([], { env: herdr });
+      // herdr-web-ui uploads a pasted image and pastes its quoted path.
+      type(`\x1b[200~'${screenshot}' \x1b[201~`, `'${screenshot}' `);
+      vi.advanceTimersByTime(0);
+      expect(setWidget).toHaveBeenLastCalledWith("pasted-images", expect.any(Function));
+      const tui = { requestRender: vi.fn() };
+      const widget = setWidget.mock.lastCall![1](tui, theme);
+      expect(widget.render(80).join("\n")).toContain("image paste-20261016-222317-fc181c35.png");
+      await vi.waitFor(() => expect(tui.requestRender).toHaveBeenCalled());
+      const draft = widget.render(80);
+      expect(pictureRows(draft)).toBe(10);
+      expect(draft.join("")).not.toContain("\x1b_G");
+      for (const width of [80, 30]) for (const line of widget.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+
+      // Typing goes on: keys reach the editor, and the preview is not rebuilt.
+      const calls = setWidget.mock.calls.length;
+      expect(type("w", `'${screenshot}' w`)).toBeUndefined();
+      vi.advanceTimersByTime(0);
+      expect(setWidget.mock.calls.length).toBe(calls);
+
+      const text = `'${screenshot}' what is this?`;
+      const result = emit("input", { type: "input", text, source: "interactive" });
+      expect(result).toEqual({ action: "transform", text, images: [{ type: "image", data: halvesPng(300, 190).toString("base64"), mimeType: "image/png" }] });
+      expect(setWidget).toHaveBeenLastCalledWith("pasted-images", undefined);
+      emit("message_end", { message: { role: "user", content: [{ type: "text", text }, result.images[0]] } });
+      emit("message_start", { message: { role: "assistant" } });
+      expect(appendEntry).toHaveBeenCalledWith("pasted-images", { paths: [screenshot] });
+      // The submitted entry was decoded for the draft already: drawn at once, up to its 15 rows.
+      const entry = render({ data: { paths: [screenshot] } }).render(80);
+      expect(entry[0]).toContain("image paste-20261016-222317-fc181c35.png");
+      expect(pictureRows(entry)).toBe(15);
+      expect(entry.join("")).not.toContain("\x1b_G");
+    });
+
+    it("redraws a resumed transcript entry once decoded and removes its render hook on shutdown", async () => {
+      const { setWidget, emit, render } = setup([], { env: herdr, mode: "tui" });
+      const hook = setWidget.mock.calls.find((call) => call[0] === "pasted-images-render")!;
+      expect(hook[2]).toEqual({ placement: "belowEditor" });
+      const tui = { requestRender: vi.fn() };
+      expect(hook[1](tui, theme).render(80)).toEqual([]);
+      const resumed = join(dir, "resumed.png");
+      writeFileSync(resumed, halvesPng(64, 32));
+      const entry = render({ data: { paths: [resumed, join(dir, "gone.png")] } });
+      expect(pictureRows(entry.render(80))).toBe(0);
+      await vi.waitFor(() => expect(tui.requestRender).toHaveBeenCalled());
+      const lines = entry.render(80);
+      expect(pictureRows(lines)).toBeGreaterThan(0);
+      expect(lines.join("\n")).toContain(`image unavailable: ${join(dir, "gone.png")}`);
+      emit("session_shutdown", {});
+      expect(setWidget).toHaveBeenCalledWith("pasted-images-render", undefined);
+    });
+
+    it("keeps Pi's own image outside herdr and with PI_IMAGES_CELL_PREVIEWS=0", () => {
+      for (const env of [{}, { TERM_PROGRAM: "ghostty" }, { ...herdr, PI_IMAGES_CELL_PREVIEWS: "0" }]) {
+        const { setWidget, render } = setup([], { env, mode: "tui" });
+        expect(setWidget).not.toHaveBeenCalled();
+        const entry = render({ data: { paths: [screenshot] } });
+        expect(entry.children[1]).toBeInstanceOf(Image);
+        expect(pictureRows(entry.render(80))).toBe(0);
+      }
+    });
   });
 });
