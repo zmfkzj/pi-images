@@ -1,6 +1,6 @@
 import { inflateSync } from "node:zlib";
 import { convertToPng, resizeImage } from "@earendil-works/pi-coding-agent";
-import { backgroundAnsi, foregroundAnsi, getCellDimensions, getTerminalColorMode, rgbColor, type CellDimensions,
+import { backgroundAnsi, foregroundAnsi, getCellDimensions, getTerminalColorMode, hyperlink, rgbColor, type CellDimensions,
   type Component, type TerminalColorMode } from "@earendil-works/pi-tui";
 
 /**
@@ -187,14 +187,15 @@ export function previewPixels(image: { data: string; mimeType: string }, onReady
 
 /**
  * An image drawn as cells within `maxWidthCells` x `maxHeightCells`. It shows nothing while decoding, calls
- * `requestRender` once ready, and renders `fallback()` when the image cannot be decoded.
+ * `requestRender` once ready, and renders `fallback()` when the image cannot be decoded. With `link` (a URI),
+ * each line is one OSC 8 link to it, so a click on the preview opens the image.
  */
 export class CellImage implements Component {
   private cached?: { width: number; mode: TerminalColorMode; lines: string[] };
   private fallbackComponent?: Component;
 
   constructor(private readonly image: { data: string; mimeType: string }, private readonly options: {
-    maxWidthCells: number; maxHeightCells: number; requestRender: () => void; fallback: () => Component;
+    maxWidthCells: number; maxHeightCells: number; requestRender: () => void; fallback: () => Component; link?: string;
   }) {}
 
   render(width: number): string[] {
@@ -205,7 +206,8 @@ export class CellImage implements Component {
     if (this.cached?.width === width && this.cached.mode === mode) return this.cached.lines;
     const { cols, pixelRows } = cellGrid(pixels.width, pixels.height,
       Math.max(1, Math.min(width - 2, this.options.maxWidthCells)), this.options.maxHeightCells);
-    const lines = halfBlockLines(resample(pixels, cols, pixelRows), mode);
+    const link = this.options.link;
+    const lines = halfBlockLines(resample(pixels, cols, pixelRows), mode).map((line) => link ? hyperlink(line, link) : line);
     this.cached = { width, mode, lines };
     return lines;
   }

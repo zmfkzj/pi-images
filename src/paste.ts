@@ -4,9 +4,11 @@ import { basename, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
-import { Container, Image, isKeyRelease, matchesKey, Text, type Component } from "@earendil-works/pi-tui";
+import { Container, getCapabilities, Image, isKeyRelease, matchesKey, Text, type Component } from "@earendil-works/pi-tui";
 import { CellImage, cellPreviewsEnabled } from "./cell-preview.ts";
+import { fileLinkUri, linkToFile } from "./file-links.ts";
 import { MAX_REFERENCE_BYTES, sniffImageMime } from "./tool.ts";
+import { MARKER_SCHEME, markersActive, markFileImage } from "./terminal-refs.ts";
 
 /** Session entry type that shows the images of a submitted message in the transcript. */
 export const PASTED_IMAGES_ENTRY = "pasted-images";
@@ -148,26 +150,51 @@ export function readPastedImage(path: string): PastedImage | undefined {
 }
 
 /**
- * A column of image previews; files that are gone are listed by path. With `cells`, images are drawn as text
- * cells (see cell-preview.ts) instead of terminal graphics, and `cells.requestRender` redraws once decoded.
+ * A column of image previews; files that are gone are listed by path. Each picture is a native image named by its
+ * file (terminal-refs.ts `markFileImage`), so in herdr's web terminal it shows at full resolution and opens in the
+ * image viewer on click, as a tool's image does. With `cells`, a picture that gets no marker (no session writes
+ * markers, or its path cannot be named) is drawn as text cells (see cell-preview.ts) instead, and
+ * `cells.requestRender` redraws once decoded. Where the terminal takes OSC 8 links, the label and the cells link to
+ * the image file (file-links.ts).
  */
 export function imagesComponent(paths: readonly string[], theme: Theme, maxHeightCells: number,
   cells?: { requestRender: () => void }): Component {
   const container = new Container();
+  const links = getCapabilities().hyperlinks;
   for (const path of paths) {
     const image = readPastedImage(path);
     if (!image) {
       container.addChild(new Text(theme.fg("dim", `image unavailable: ${path}`), 1, 0));
       continue;
     }
-    container.addChild(new Text(theme.fg("dim", `image ${basename(path)}`), 1, 0));
-    const native = () => new Image(image.data, image.mimeType, { fallbackColor: (text) => theme.fg("dim", text) },
-      { maxWidthCells: 60, maxHeightCells, filename: basename(path) });
+    const label = `image ${basename(path)}`;
+    container.addChild(new Text(theme.fg("dim", links ? linkToFile(label, path) : label), 1, 0));
+    const native = () => markFileImage(new Image(image.data, image.mimeType, { fallbackColor: (text) => theme.fg("dim", text) },
+      { maxWidthCells: 60, maxHeightCells, filename: basename(path) }), path);
+    const link = links ? fileLinkUri(path) : undefined;
     container.addChild(cells
-      ? new CellImage(image, { maxWidthCells: 60, maxHeightCells, requestRender: cells.requestRender, fallback: native })
+      ? new MarkedOrCells(native(), new CellImage(image, { maxWidthCells: 60, maxHeightCells, requestRender: cells.requestRender, fallback: native, link }))
       : native());
   }
   return container;
+}
+
+/** The native image while it carries terminal image markers (herdr's web terminal draws it), else the cells. */
+class MarkedOrCells implements Component {
+  constructor(private readonly native: Image, private readonly cells: Component) {}
+
+  render(width: number): string[] {
+    if (markersActive()) {
+      const lines = this.native.render(width);
+      if (lines.some((line) => line.includes(`\x1b]8;;${MARKER_SCHEME}:`))) return lines;
+    }
+    return this.cells.render(width);
+  }
+
+  invalidate(): void {
+    this.native.invalidate();
+    this.cells.invalidate?.();
+  }
 }
 
 /**

@@ -14,9 +14,11 @@ import { getCapabilities, Image } from "@earendil-works/pi-tui";
  *
  * The web terminal resolves `ref` through its authenticated, pane-scoped image endpoint, checks the
  * pane's session against `s` and the bytes against `h`, and draws the image inline at
- * (markerX - c, markerY - y). Markers carry no path, URL or image bytes, and only images of tool
- * results on the current branch of this session get one. Native output is unchanged unless the gate
- * holds (Kitty images inside a herdr pane, or PI_IMAGES_TERMINAL_REFS=1).
+ * (markerX - c, markerY - y). Markers carry no URL or image bytes. Images of tool results on the current branch
+ * of this session are named by `pi:<toolCallId>:<n>`; a picture drawn from a file (a pasted image, marked with
+ * markFileImage) by `file:<absolute path>`, which the web serves only for a marker's session- and digest-bound
+ * read. Native output is unchanged unless the gate holds (Kitty images inside a herdr pane, or
+ * PI_IMAGES_TERMINAL_REFS=1).
  */
 export const MARKER_SCHEME = "x-pi-image";
 export const MARKER_VERSION = "v1";
@@ -102,6 +104,42 @@ export class ImageRefIndex {
 /** First 32 hex characters of the SHA-256 of the decoded image bytes. */
 export function imageDigest(data: string): string {
   return createHash("sha256").update(Buffer.from(data, "base64")).digest("hex").slice(0, 32);
+}
+
+/** The longest image file path a `file:` ref names (herdr-web-ui's bound). */
+export const MAX_FILE_REF_PATH = 1024;
+
+/**
+ * The `file:` ref of an image file pi drew from a path, or undefined when the web would not take it: absolute
+ * (POSIX or a Windows drive), at most 1024 characters, no control character and no `.`/`..` segment.
+ */
+export function fileImageRef(path: string): string | undefined {
+  if (path.length < 2 || path.length > MAX_FILE_REF_PATH || /[\u0000-\u001f\u007f]/.test(path)) return undefined;
+  if (!path.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(path)) return undefined;
+  if (path.split(/[\\/]/).some((segment) => segment === "." || segment === "..")) return undefined;
+  return `file:${path}`;
+}
+
+const FILE_IMAGES = Symbol.for("pi-images:terminal-refs:file-images");
+/** Image components drawn from a file (pasted pictures), shared by every runtime of this process. */
+function fileImages(): WeakMap<Image, string> {
+  const holder = globalThis as unknown as Record<symbol, WeakMap<Image, string> | undefined>;
+  return holder[FILE_IMAGES] ??= new WeakMap();
+}
+
+/**
+ * Names `image` by the file it was read from: its markers carry `file:<path>` instead of a tool result's ref,
+ * whatever tool result holds the same bytes, and the web reads the file, checking the digest of the bytes this
+ * component drew. Returns `image`.
+ */
+export function markFileImage<T extends Image>(image: T, path: string): T {
+  fileImages().set(image, path);
+  return image;
+}
+
+/** Whether a marker provider is installed now (some session writes markers). */
+export function markersActive(): boolean {
+  return (Image.prototype as unknown as Record<symbol, PatchState | undefined>)[PATCH]?.provider !== undefined;
 }
 
 /**
@@ -202,11 +240,18 @@ export function registerTerminalImageRefs(pi: ExtensionAPI, options: { env?: Nod
   const provider: MarkerProvider = (image, lines) => {
     const data = (image as unknown as { base64Data?: unknown }).base64Data;
     if (!session || typeof data !== "string") return undefined;
-    let lookup = lookups.get(image);
-    if (lookup?.data !== data || lookup.session !== session || lookup.version !== index.version) {
-      lookups.set(image, lookup = { data, session, version: index.version, ref: index.find(data) });
+    let ref: string | undefined;
+    const file = fileImages().get(image);
+    if (file !== undefined) {
+      const mimeType = (image as unknown as { mimeType?: unknown }).mimeType;
+      ref = typeof mimeType === "string" && SERVED_TYPES.has(mimeType) ? fileImageRef(file) : undefined;
+    } else {
+      let lookup = lookups.get(image);
+      if (lookup?.data !== data || lookup.session !== session || lookup.version !== index.version) {
+        lookups.set(image, lookup = { data, session, version: index.version, ref: index.find(data) });
+      }
+      ref = lookup.ref;
     }
-    const ref = lookup.ref;
     if (!ref) return undefined;
     let digest = digests.get(image);
     if (digest?.data !== data) digests.set(image, digest = { data, digest: imageDigest(data) });

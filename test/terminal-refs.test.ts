@@ -3,8 +3,8 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Image, resetCapabilitiesCache, setCapabilities, setImageTranscoder, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  addMarkers, ImageRefIndex, imageDigest, installMarkerProvider, kittyPlacement, MARKER_CELL, markersEnabled, markerUri,
-  MAX_MARKER_URI, registerTerminalImageRefs, toolResultImageRefs,
+  addMarkers, fileImageRef, ImageRefIndex, imageDigest, installMarkerProvider, kittyPlacement, MARKER_CELL, markersActive,
+  markersEnabled, markerUri, markFileImage, MAX_FILE_REF_PATH, MAX_MARKER_URI, registerTerminalImageRefs, toolResultImageRefs,
 } from "../src/terminal-refs.ts";
 
 // 4x2 PNG and 1x1 PNG, generated for these tests.
@@ -23,7 +23,8 @@ const fallbackTheme = { fallbackColor: (text: string) => text };
 /**
  * The web consumer's strict parser (herdr-web-ui contract v1, shared/terminal-images.ts), used to check what
  * we emit: query charset, six keys once each, pi's session id rule, and `ref` = `pi:<id>:<n>` with an opaque
- * id of 1..1024 printable non-space ASCII characters (parsePiImageRef: the last colon separates n).
+ * id of 1..1024 printable non-space ASCII characters (parsePiImageRef: the last colon separates n), or
+ * `file:<absolute path>` (parsePiFileRef: at most 1024 characters, no control character, no `.`/`..` segment).
  */
 function parseMarker(uri: string) {
   const match = /^x-pi-image:v1\?(.*)$/.exec(uri);
@@ -32,7 +33,9 @@ function parseMarker(uri: string) {
   const keys = [...params.keys()];
   if (keys.length !== 6 || new Set(keys).size !== 6 || !["s", "ref", "h", "c", "r", "y"].every((key) => params.has(key))) return undefined;
   const fields = { s: params.get("s")!, ref: params.get("ref")!, h: params.get("h")!, c: +params.get("c")!, r: +params.get("r")!, y: +params.get("y")! };
-  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(fields.s) || !/^pi:[\x21-\x7e]{1,1024}:\d{1,3}$/.test(fields.ref) || !/^[0-9a-f]{32}$/.test(fields.h)) return undefined;
+  const file = /^file:(\/[^\u0000-\u001f\u007f]{0,1023})$/.exec(fields.ref)?.[1];
+  const fileOk = file !== undefined && !file.split("/").some((segment) => segment === "." || segment === "..");
+  if (!/^[A-Za-z0-9_.-]{1,128}$/.test(fields.s) || !(fileOk || /^pi:[\x21-\x7e]{1,1024}:\d{1,3}$/.test(fields.ref)) || !/^[0-9a-f]{32}$/.test(fields.h)) return undefined;
   if (!(fields.c >= 1 && fields.c <= 1000 && fields.r >= 1 && fields.r <= 1000 && fields.y >= 0 && fields.y < fields.r)) return undefined;
   return fields;
 }
@@ -297,5 +300,49 @@ describe("Pi image components", () => {
     const failing = installMarkerProvider(() => { throw new Error("boom"); });
     expect(image.render(80)[0]).toContain("\x1b_G");
     failing();
+  });
+
+  it("names a picture drawn from a file by `file:<path>`, whatever tool result holds the same bytes", () => {
+    expect(markersActive()).toBe(false);
+    start([wideResult]);
+    expect(markersActive()).toBe(true);
+    const path = "/home/u/.herdr-web-ui/붙여넣기 #1 100%.png";
+    const pasted = markFileImage(new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 }), path);
+    const lines = render(pasted);
+    const markers = markersIn(lines);
+    const placement = kittyPlacement(lines[0]!)!;
+    expect(markers.map((m) => m.row)).toEqual(Array.from({ length: placement.rows - 1 }, (_, i) => i + 1));
+    for (const marker of markers) {
+      expect(marker.fields).toBeDefined();
+      expect(marker.fields!.ref).toBe(`file:${path}`);
+      expect(marker.fields!.h).toBe(imageDigest(WIDE));
+      // percent-encoded: spaces, Korean, `#` and `%` never reach the URI raw
+      expect(marker.uri).toContain("ref=file%3A%2Fhome%2Fu%2F.herdr-web-ui%2F%EB%B6%99%EC%97%AC%EB%84%A3%EA%B8%B0%20%231%20100%25.png");
+    }
+    // the same bytes drawn by a tool result's component keep that result's ref
+    const tool = new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 });
+    expect(markersIn(render(tool)).every((m) => m.fields!.ref === "pi:call_wide:0")).toBe(true);
+    // a file needs no tool result, and a /tree change keeps it
+    const dot = markFileImage(new Image(DOT, "image/png", fallbackTheme, { maxWidthCells: 20 }), "/tmp/dot.png");
+    const refs = markersIn(render(dot)).map((m) => m.fields?.ref);
+    expect(refs.length).toBeGreaterThan(0);
+    expect(new Set(refs)).toEqual(new Set(["file:/tmp/dot.png"]));
+  });
+
+  it("gives no marker to a file picture the web would not take, and none without a provider", () => {
+    const image = (path: string, mimeType = "image/png", data = WIDE) =>
+      markFileImage(new Image(data, mimeType, fallbackTheme, { maxWidthCells: 20 }), path);
+    expect(markersIn(render(image("/tmp/a.png")))).toEqual([]);
+    start([]);
+    expect(markersIn(render(image("relative.png")))).toEqual([]);
+    expect(markersIn(render(image("/tmp/../etc/a.png")))).toEqual([]);
+    expect(markersIn(render(image("/tmp/a\nb.png")))).toEqual([]);
+    expect(markersIn(render(image(`/${"a".repeat(MAX_FILE_REF_PATH)}`)))).toEqual([]);
+    // a path within the ref bound whose encoded marker passes 512 characters gets none either
+    expect(markersIn(render(image(`/${"한".repeat(60)}.png`)))).toEqual([]);
+    expect(markersIn(render(image("/tmp/a.bmp", "image/bmp", DOT)))).toEqual([]);
+    expect(fileImageRef("C:\\Users\\a.png")).toBe("file:C:\\Users\\a.png");
+    expect(fileImageRef("/tmp/./a.png")).toBeUndefined();
+    expect(fileImageRef("/")).toBeUndefined();
   });
 });

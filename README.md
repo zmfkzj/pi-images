@@ -65,9 +65,9 @@ and ask "make this pixel art".
   the draft preview and the transcript entry are drawn as text cells: upper half
   blocks (`▀`) with the pixel colors as foreground/background, two pixel rows per
   cell row, up to 60×10 cells for the draft and 60×15 in the transcript. herdr's
-  attach stream, and so herdr-web-ui's terminal, drops Kitty graphics, and the
-  terminal image references below serve only stored tool-result images, so Pi's
-  native image would leave the label above blank rows there. The cells are a
+  attach stream, and so herdr-web-ui's terminal, drops Kitty graphics, so a
+  native image without a terminal image reference (below) would leave the label
+  above blank rows there. The cells are a
   coarse thumbnail (about 2 pixels per cell), also in herdr's own client. Pi
   scales and converts the file first (PNG, JPEG, WebP, GIF); the cells appear
   once that finishes (a few hundred ms for a large screenshot, decoded once per
@@ -76,6 +76,15 @@ and ask "make this pixel art".
   elsewhere. It is read at session start, so `/reload` applies it; an exported
   variable needs a Pi restart. Elsewhere the previews are unchanged. Checks:
   `test/cell-preview.test.ts`, `test/paste.test.ts`.
+  Where Pi writes terminal image markers (below), the previews are native
+  images named by their file instead, which herdr-web-ui draws at full
+  resolution and opens on click; the cells are the fallback when a picture gets
+  no marker.
+- **Opening the image:** where the terminal takes OSC 8 hyperlinks (herdr,
+  Kitty, Ghostty, WezTerm, iTerm2...; `PI_HYPERLINKS=0|1` overrides Pi's
+  detection), the `image <name>` label and every cell row of a cell preview are
+  a `file://` link to the image file (herdr-web-ui opens it in its file viewer).
+  A file that is gone is not linked.
 
 ## Images in the herdr web terminal
 
@@ -129,6 +138,18 @@ rendering is unchanged.
   longer resolves them because the pane no longer runs that session. Image
   rows that have left herdr's screen (no scrollback in the attach) are not
   drawn; partly visible images are drawn from their remaining rows.
+- **Pasted pictures (`file:` refs):** the draft preview and the transcript
+  entry draw each picture as a native image named by its file
+  (`markFileImage`): its markers carry `ref=file:<absolute path>` instead of a
+  tool result's ref, whatever tool result holds the same bytes, and `h` is the
+  digest of the bytes drawn. herdr-web-ui serves such a ref only for a marker's
+  session- and digest-bound read, so a file changed or removed since shows
+  nothing. A path the web would not take (relative, `.`/`..` segments, control
+  characters, over 1024 characters, a marker URI over 512) or a type it does
+  not serve gets no marker, and the preview falls back to the text cells.
+- **Opening a picture (web side):** herdr-web-ui opens a click on any drawn
+  picture (tool result or pasted) in its image viewer: enlarge, download and
+  pi's image comments.
 
 The only hook that sees every native image is pi-tui's `Image` component, which
 Pi and its extensions share; the extension wraps `Image.prototype.render` once

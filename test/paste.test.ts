@@ -3,9 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Image, visibleWidth } from "@earendil-works/pi-tui";
+import { Image, resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ATTACHMENTS_CHANNEL, clipboardPasteKey, imagePathsInText, pastedImagePaths, registerPastedImages, splitPastedWords } from "../src/paste.ts";
+import { registerTerminalImageRefs } from "../src/terminal-refs.ts";
 import { halvesPng } from "./png-fixture.ts";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
@@ -318,6 +319,83 @@ describe("registerPastedImages", () => {
       emit("session_shutdown", {});
       expect(setWidget).toHaveBeenCalledWith("pasted-images-render", undefined);
     });
+
+    it("draws draft and transcript previews natively, named by their file, where the session writes terminal image markers", async () => {
+      const named = join(dir, "붙여넣기 #1.png");
+      writeFileSync(named, halvesPng(300, 190));
+      const data = halvesPng(300, 190).toString("base64");
+      setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+      const refs = new Map<string, (event: any, ctx: any) => unknown>();
+      registerTerminalImageRefs({ on: (name: string, handler: (event: any, ctx: any) => unknown) => { refs.set(name, handler); } } as unknown as ExtensionAPI,
+        { env: herdr });
+      const session = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "01a14900-0000-7000-8000-00000000e2e1",
+        // a read of the same bytes in the transcript: the pasted preview still names its own file
+        getBranch: () => [{ type: "message", message: { role: "toolResult", toolCallId: "call_read", content: [{ type: "image", data, mimeType: "image/png" }] } }] } };
+      try {
+        vi.useFakeTimers();
+        const { setWidget, emit, type, render } = setup([], { env: herdr, mode: "tui" });
+        refs.get("session_start")!({ type: "session_start" }, session);
+        type(`\x1b[200~'${named}' \x1b[201~`, `'${named}' `);
+        vi.advanceTimersByTime(0);
+        const widget = setWidget.mock.lastCall![1]({ requestRender: vi.fn() }, theme);
+        const ref = `ref=${encodeURIComponent(`file:${named}`)}&`;
+        for (const lines of [widget.render(80), render({ data: { paths: [named] } }).render(80)] as string[][]) {
+          expect(lines.some((line) => line.includes("\x1b_G"))).toBe(true); // the native image, not cells
+          expect(pictureRows(lines)).toBe(0);
+          const markers = lines.filter((line) => line.includes("x-pi-image:v1?"));
+          expect(markers.length).toBeGreaterThan(0);
+          for (const line of markers) expect(line).toContain(ref);
+        }
+        // the file gone: nothing to draw, listed by path
+        expect(render({ data: { paths: [join(dir, "gone.png")] } }).render(80).join("")).not.toContain("x-pi-image:");
+        emit("session_shutdown", {});
+
+        // once no session writes markers, the same component falls back to the cells
+        refs.get("session_shutdown")!({ type: "session_shutdown" }, session);
+        const cells = render({ data: { paths: [named] } });
+        cells.render(80);
+        await vi.waitFor(() => expect(pictureRows(cells.render(80))).toBeGreaterThan(0), { timeout: 2000 });
+      } finally {
+        refs.get("session_shutdown")?.({ type: "session_shutdown" }, session);
+        resetCapabilitiesCache();
+      }
+    });
+
+    it("links the draft and transcript previews (label and cells) to the image file, which the web terminal opens", async () => {
+      const named = join(dir, "붙여넣기 #1 100%.png");
+      writeFileSync(named, halvesPng(300, 190));
+      const uri = `file://${dir.split("/").map(encodeURIComponent).join("/")}/%EB%B6%99%EC%97%AC%EB%84%A3%EA%B8%B0%20%231%20100%25.png`;
+      const open = `\x1b]8;;${uri}\x1b\\`, close = "\x1b]8;;\x1b\\";
+      setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+      try {
+        vi.useFakeTimers();
+        const { setWidget, emit, type, render } = setup([], { env: herdr });
+        type(`\x1b[200~'${named}' \x1b[201~`, `'${named}' `);
+        vi.advanceTimersByTime(0);
+        const tui = { requestRender: vi.fn() };
+        const widget = setWidget.mock.lastCall![1](tui, theme);
+        widget.render(80); // starts decoding; the preview redraws once the cells are ready
+        await vi.waitFor(() => expect(tui.requestRender).toHaveBeenCalled());
+        for (const lines of [widget.render(80), render({ data: { paths: [named] } }).render(80)] as string[][]) {
+          expect(lines[0]).toContain(`${open}image 붙여넣기 #1 100%.png${close}`);
+          const picture = lines.filter((line) => PICTURE.test(line));
+          expect(picture.length).toBeGreaterThan(0);
+          // each row is one link, closed on its own row: nothing else on the screen becomes part of it
+          for (const line of picture) expect(line.startsWith(open) && line.endsWith(close)).toBe(true);
+          for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+        }
+        // an unavailable file is not linked
+        expect(render({ data: { paths: [join(dir, "gone.png")] } }).render(80).join("")).not.toContain("\x1b]8;");
+        emit("session_shutdown", {});
+
+        // where the terminal takes no OSC 8 links, the previews carry none
+        setCapabilities({ images: "kitty", trueColor: true, hyperlinks: false });
+        expect(render({ data: { paths: [named] } }).render(80).join("")).not.toContain("\x1b]8;");
+      } finally {
+        resetCapabilitiesCache();
+      }
+    });
+
 
     it("keeps Pi's own image outside herdr and with PI_IMAGES_CELL_PREVIEWS=0", () => {
       for (const env of [{}, { TERM_PROGRAM: "ghostty" }, { ...herdr, PI_IMAGES_CELL_PREVIEWS: "0" }]) {
