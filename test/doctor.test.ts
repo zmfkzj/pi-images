@@ -1,7 +1,7 @@
 // `/images doctor|install-deps` and the umbrella dependency provider, against a local fake CLIProxyAPI (no image
 // request, no real credential, temporary agent directories only).
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -153,6 +153,21 @@ describe("check", () => {
     expect(report.items).toHaveLength(1);
     expect(report.items[0]).toMatchObject({ name: "image model settings", status: "error" });
     expect(report.items[0]!.action).toContain(join(agentDir, "image.models.json"));
+  });
+
+  it("inside a herdr pane, checks that herdr's pi integration is installed for terminal images", async () => {
+    writeFileSync(join(agentDir, "image.models.json"), JSON.stringify({ defaultModel: "vendor/painter", models: [{ id: "vendor/painter" }] }));
+    const pane = { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p4", HERDR_SOCKET_PATH: "/run/herdr.sock" };
+    const integration = join(agentDir, "extensions", "herdr-agent-state.ts");
+    const missing = byName(await checkImages(ctx(["vendor/painter"]), options(pane)), "herdr pi integration")!;
+    expect(missing).toMatchObject({ status: "manual", action: "Run `herdr integration install pi` on this PC, then /reload or restart pi" });
+    expect(missing.detail).toContain(integration);
+    expect(byName(await installImages(ctx(["vendor/painter"]), options(pane)), "herdr pi integration")!.status).toBe("manual");
+    mkdirSync(join(agentDir, "extensions"));
+    writeFileSync(integration, "// installed by herdr\n");
+    expect(byName(await checkImages(ctx(["vendor/painter"]), options(pane)), "herdr pi integration")!.status).toBe("ok");
+    // outside herdr (or without its pane variables) there is nothing to check
+    expect(byName(await checkImages(ctx(["vendor/painter"]), options({ ...pane, HERDR_PANE_ID: undefined })), "herdr pi integration")).toBeUndefined();
   });
 });
 

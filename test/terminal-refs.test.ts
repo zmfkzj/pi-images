@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Image, resetCapabilitiesCache, setCapabilities, setImageTranscoder, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  addMarkers, fileImageRef, ImageRefIndex, imageDigest, installMarkerProvider, kittyPlacement, MARKER_CELL, markersActive,
-  markersEnabled, markerUri, markFileImage, MAX_FILE_REF_PATH, MAX_MARKER_URI, registerTerminalImageRefs, toolResultImageRefs,
+  addMarkers, fileImageRef, HERDR_PI_INTEGRATION_FILE, HERDR_PI_INTEGRATION_INSTALL, herdrPiIntegration, ImageRefIndex, imageDigest,
+  installMarkerProvider, kittyPlacement, MARKER_CELL, markersActive, markersEnabled, markerUri, markFileImage, MAX_FILE_REF_PATH,
+  MAX_MARKER_URI, missingHerdrPiIntegrationMessage, registerTerminalImageRefs, toolResultImageRefs,
 } from "../src/terminal-refs.ts";
 
 // 4x2 PNG and 1x1 PNG, generated for these tests.
@@ -285,6 +287,43 @@ describe("Pi image components", () => {
     branch.length = 0;
     emit("session_tree", { newLeafId: null, oldLeafId: "x" }, context(branch));
     expect(markersIn(render(image))).toEqual([]);
+  });
+
+  it("warns once when herdr's pi integration is missing, since the web terminal cannot resolve any marker then", () => {
+    // A remote herdr pane without `herdr integration install pi`: markers are written, herdr names no session.
+    const pane = { TERM_PROGRAM: "herdr", HERDR_ENV: "1", HERDR_PANE_ID: "w1:p4", HERDR_SOCKET_PATH: "/run/herdr.sock" };
+    const integration = join("/agent", "extensions", HERDR_PI_INTEGRATION_FILE);
+    const run = (env: NodeJS.ProcessEnv, installed: boolean, starts = 1) => {
+      const notices: [string, string | undefined][] = [];
+      const ui = { notify: (message: string, level?: string) => notices.push([message, level]) };
+      const { pi, emit } = fakePi();
+      const asked: string[] = [];
+      registerTerminalImageRefs(pi, { env, agentDir: "/agent", exists: (path) => { asked.push(path); return installed; } });
+      for (let i = 0; i < starts; i++) emit("session_start", { reason: i ? "new" : "startup" }, context([wideResult], { ui }));
+      cleanup.push(() => emit("session_shutdown", { reason: "quit" }));
+      const marked = markersIn(render(new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 }))).length > 0;
+      for (const fn of cleanup.splice(0)) fn();
+      return { notices, asked, marked };
+    };
+
+    const missing = run(pane, false, 2);
+    expect(missing.marked).toBe(true); // native output and markers are unchanged
+    expect(missing.asked).toEqual([integration]);
+    expect(missing.notices).toEqual([[missingHerdrPiIntegrationMessage(integration), "warning"]]);
+    expect(missing.notices[0]![0]).toContain(HERDR_PI_INTEGRATION_INSTALL);
+
+    expect(run(pane, true).notices).toEqual([]);
+    // Forced markers outside herdr, and herdr panes where markers are off, have nothing to report.
+    expect(run({ PI_IMAGES_TERMINAL_REFS: "1" }, false)).toMatchObject({ notices: [], asked: [], marked: true });
+    expect(run({ ...pane, PI_IMAGES_TERMINAL_REFS: "0" }, false)).toMatchObject({ notices: [], asked: [], marked: false });
+  });
+
+  it("looks for herdr's pi integration only inside a herdr pane", () => {
+    const pane = { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p4", HERDR_SOCKET_PATH: "/run/herdr.sock" };
+    expect(herdrPiIntegration(pane, "/agent", () => false)).toEqual({ path: join("/agent", "extensions", "herdr-agent-state.ts"), installed: false });
+    expect(herdrPiIntegration(pane, "/agent", () => true)?.installed).toBe(true);
+    for (const key of Object.keys(pane)) expect(herdrPiIntegration({ ...pane, [key]: undefined }, "/agent", () => false)).toBeUndefined();
+    expect(herdrPiIntegration({ ...pane, HERDR_ENV: "0" }, "/agent", () => false)).toBeUndefined();
   });
 
   it("shares one patch across runtimes and only the latest provider runs", () => {

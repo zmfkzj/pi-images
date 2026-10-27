@@ -11,6 +11,7 @@ import {
   type DependencyReport,
 } from "./dependencies.ts";
 import { isCliproxyapiModel, resolveModelSettings, userModelsConfigPath } from "./models.ts";
+import { HERDR_PI_INTEGRATION_INSTALL, herdrPiIntegration } from "./terminal-refs.ts";
 
 export const IMAGES_DEPENDENCY_ID = "images";
 export const IMAGES_LABEL = "pi-gateway-images";
@@ -75,6 +76,17 @@ function invalidJsonObject(path: string): boolean {
 }
 
 export async function checkImages(ctx: ImagesDoctorContext | undefined, options: ImagesDoctorOptions = {}): Promise<DependencyReport> {
+  const report = await checkImageModels(ctx, options);
+  const integration = herdrPiIntegration(options.env ?? process.env, options.agentDir ?? getAgentDir());
+  if (integration) report.items.push(integration.installed
+    ? { name: "herdr pi integration", status: "ok", detail: `installed (${integration.path}): herdr can name this pane's pi session for terminal images` }
+    : { name: "herdr pi integration", status: "manual",
+      detail: `not installed (${integration.path}): herdr reports no pi session for this pane, so herdr-web-ui shows its terminal images as blank rows`,
+      action: `Run \`${HERDR_PI_INTEGRATION_INSTALL}\` on this PC, then /reload or restart pi` });
+  return report;
+}
+
+async function checkImageModels(ctx: ImagesDoctorContext | undefined, options: ImagesDoctorOptions): Promise<DependencyReport> {
   const agentDir = options.agentDir ?? getAgentDir();
   const env = options.env ?? process.env;
   const items: DependencyItem[] = [];

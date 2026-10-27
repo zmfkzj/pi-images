@@ -99,6 +99,15 @@ rendering is unchanged.
   runs in a herdr pane (`TERM_PROGRAM=herdr`, also inside `herdr --remote`).
   `PI_IMAGES_TERMINAL_REFS=0` turns it off, `=1` turns it on outside herdr
   (still Kitty only). Elsewhere the rendered output is byte-identical.
+- **Needs herdr's pi integration** (`herdr integration install pi`, which writes
+  `<agent dir>/extensions/herdr-agent-state.ts`) on every PC where Pi runs,
+  remote PCs included: it reports the pane's pi session to herdr, and the web
+  side draws a marker only for that session. Without it herdr names no session
+  for the pane, so every terminal image (tool results and pasted pictures)
+  stays blank rows there, and herdr-web-ui's chat has no transcript either.
+  Inside a herdr pane, Pi warns once at session start when the file is missing
+  and `/images doctor` lists it as a manual action; install it, then `/reload`
+  or restart Pi.
 - **Which images:** only images of tool results on the current branch of the
   current session (`read`, `generate_image`, MCP and other tools; not nested
   `ctx.executeTool()` results). Paste previews, the `pasted-images` transcript
@@ -154,7 +163,8 @@ rendering is unchanged.
 The only hook that sees every native image is pi-tui's `Image` component, which
 Pi and its extensions share; the extension wraps `Image.prototype.render` once
 per process; while no session provides markers, the wrapper returns Pi's own
-render result unchanged. Checks: `test/terminal-refs.test.ts`.
+render result unchanged. Checks: `test/terminal-refs.test.ts` (and
+`test/doctor.test.ts` for the herdr pi integration check).
 
 ## Codemode
 
@@ -352,6 +362,11 @@ from `/oh-my-pi doctor`). It is read-only:
     (log in again or fix the key); connection refused or unknown host is an
     error (start CLIProxyAPI or fix the base URL); a timeout or other network
     failure is unverified, with a `curl` command to check by hand.
+- **herdr pi integration** (only inside a herdr pane: `HERDR_ENV=1`,
+  `HERDR_PANE_ID`, `HERDR_SOCKET_PATH`): ok when
+  `<agent dir>/extensions/herdr-agent-state.ts` exists, else manual
+  (`herdr integration install pi`, then `/reload`); see
+  [Images in the herdr web terminal](#images-in-the-herdr-web-terminal).
 
 `/images install-deps` installs nothing: this package has no automatically
 installable dependency (it needs only Pi and Node.js; the CLIProxyAPI service

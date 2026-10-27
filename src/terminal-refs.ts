@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { getAgentDir, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getCapabilities, Image } from "@earendil-works/pi-tui";
 
 /**
@@ -195,6 +197,28 @@ export function markersEnabled(env: NodeJS.ProcessEnv = process.env, imageProtoc
   return env.TERM_PROGRAM === "herdr";
 }
 
+/** The file `herdr integration install pi` writes into Pi's user extensions directory. */
+export const HERDR_PI_INTEGRATION_FILE = "herdr-agent-state.ts";
+export const HERDR_PI_INTEGRATION_INSTALL = "herdr integration install pi";
+
+/**
+ * Inside a herdr pane (the variables herdr's pi integration reports with), where that integration should be and
+ * whether it is there; undefined outside herdr. Without it herdr knows no pi session for the pane, so the web
+ * terminal (herdr-web-ui) cannot resolve any marker's `s` and every image stays blank there.
+ */
+export function herdrPiIntegration(env: NodeJS.ProcessEnv = process.env, agentDir = getAgentDir(),
+  exists: (path: string) => boolean = existsSync): { path: string; installed: boolean } | undefined {
+  if (env.HERDR_ENV !== "1" || !env.HERDR_PANE_ID || !env.HERDR_SOCKET_PATH) return undefined;
+  const path = join(agentDir, "extensions", HERDR_PI_INTEGRATION_FILE);
+  return { path, installed: exists(path) };
+}
+
+export function missingHerdrPiIntegrationMessage(path: string): string {
+  return `Terminal images: herdr's pi integration is not installed (${path}), so herdr reports no pi session for this `
+    + `pane and herdr-web-ui shows tool-result and pasted images as blank rows. Run \`${HERDR_PI_INTEGRATION_INSTALL}\` `
+    + "on this PC, then /reload or restart pi.";
+}
+
 /** The patch shared by every runtime of this process (reload re-imports this module, not pi-tui). */
 function patchState(): PatchState {
   const proto = Image.prototype as unknown as Record<symbol, PatchState | undefined> & { render: Image["render"] };
@@ -228,7 +252,8 @@ export function installMarkerProvider(provider: MarkerProvider): () => void {
 interface Rendered { source: string[]; key: string; lines: string[] }
 
 /** Writes terminal image references for this session's tool-result images (see module comment). */
-export function registerTerminalImageRefs(pi: ExtensionAPI, options: { env?: NodeJS.ProcessEnv } = {}): void {
+export function registerTerminalImageRefs(pi: ExtensionAPI,
+  options: { env?: NodeJS.ProcessEnv; agentDir?: string; exists?: (path: string) => boolean } = {}): void {
   const index = new ImageRefIndex();
   let session: string | undefined;
   let uninstall: (() => void) | undefined;
@@ -277,11 +302,19 @@ export function registerTerminalImageRefs(pi: ExtensionAPI, options: { env?: Nod
     index.rebuild(ctx.sessionManager.getBranch());
   };
 
+  let warned = false;
   pi.on("session_start", (_event, ctx) => {
     stop();
-    if (ctx.mode !== "tui" || !ctx.hasUI || !markersEnabled(options.env ?? process.env)) return;
+    const env = options.env ?? process.env;
+    if (ctx.mode !== "tui" || !ctx.hasUI || !markersEnabled(env)) return;
     sync(ctx);
     uninstall = installMarkerProvider(provider);
+    // Markers alone draw nothing when herdr cannot name this pane's session; say why once per runtime.
+    const integration = warned ? undefined : herdrPiIntegration(env, options.agentDir ?? getAgentDir(), options.exists);
+    if (integration && !integration.installed) {
+      warned = true;
+      ctx.ui?.notify(missingHerdrPiIntegrationMessage(integration.path), "warning");
+    }
   });
   pi.on("session_tree", (_event, ctx) => { if (uninstall) sync(ctx); });
   // The interactive transcript draws a tool's images from this event's result.
