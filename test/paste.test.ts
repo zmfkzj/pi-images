@@ -314,12 +314,19 @@ describe("registerPastedImages", () => {
       expect(hook[1](tui, theme).render(80)).toEqual([]);
       const resumed = join(dir, "resumed.png");
       writeFileSync(resumed, halvesPng(64, 32));
-      const entry = render({ data: { paths: [resumed, join(dir, "gone.png")] } });
+      // A missing file under a long nested directory: its path is longer than the 80-column pane on any machine.
+      const gone = join(dir, "a-long-nested-directory-name-for-the-missing-image", "and-another-level-below-it", "gone.png");
+      const entry = render({ data: { paths: [resumed, gone] } });
       expect(pictureRows(entry.render(80))).toBe(0);
       await vi.waitFor(() => expect(tui.requestRender).toHaveBeenCalled());
       const lines = entry.render(80);
       expect(pictureRows(lines)).toBeGreaterThan(0);
-      expect(lines.join("\n")).toContain(`image unavailable: ${join(dir, "gone.png")}`);
+      // At 80 columns the notice wraps inside the width and still carries the whole path.
+      for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(80);
+      const plain = (text: string) => text.replace(/\x1b\[[0-9;]*m|\x1b\]8;;[^\x07]*\x07/g, "").replace(/\s+/g, "");
+      expect(plain(lines.join("\n"))).toContain(plain(`image unavailable: ${gone}`));
+      // Wide enough for the path, the notice is one unbroken line.
+      expect(entry.render(400).join("\n")).toContain(`image unavailable: ${gone}`);
       emit("session_shutdown", {});
       expect(setWidget).toHaveBeenCalledWith("pasted-images-render", undefined);
     });
