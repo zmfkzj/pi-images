@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { Image, resetCapabilitiesCache, setCapabilities, visibleWidth } from "@earendil-works/pi-tui";
+import { Image, resetCapabilitiesCache, setCapabilities, setCapabilityOverrides, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ATTACHMENTS_CHANNEL, clipboardPasteKey, imagePathsInText, pastedImagePaths, registerPastedImages, splitPastedWords } from "../src/paste.ts";
 import { registerTerminalImageRefs } from "../src/terminal-refs.ts";
@@ -264,7 +264,11 @@ describe("registerPastedImages", () => {
     beforeEach(() => {
       screenshot = join(dir, "paste-20261016-222317-fc181c35.png");
       writeFileSync(screenshot, halvesPng(300, 190));
+      // The pane advertises truecolor (herdr sets COLORTERM=truecolor); PICTURE matches 24-bit cells, so the
+      // test must not depend on the COLORTERM of whatever shell or service runs it. 256-color cells: cell-preview.test.ts.
+      setCapabilityOverrides({ trueColor: true });
     });
+    afterEach(() => setCapabilityOverrides({}));
 
     it("shows the draft image while typing and the submitted image in the transcript, without Kitty graphics", async () => {
       vi.useFakeTimers();

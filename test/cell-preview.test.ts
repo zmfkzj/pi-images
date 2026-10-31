@@ -1,6 +1,6 @@
 import { deflateSync } from "node:zlib";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { describe, expect, it, vi } from "vitest";
+import { setCapabilityOverrides, visibleWidth } from "@earendil-works/pi-tui";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CellImage, cellGrid, cellPreviewsEnabled, decodePng, halfBlockLines, loadPreviewPixels, previewPixels,
   resample, type Pixels } from "../src/cell-preview.ts";
 import { chunk, encodePng } from "./png-fixture.ts";
@@ -122,7 +122,10 @@ describe("loadPreviewPixels", () => {
 describe("CellImage", () => {
   const png = (width: number, height: number) => ({ data: encodePng(width, height, rgbaRows(halves(width, height))).toString("base64"), mimeType: "image/png" });
 
+  afterEach(() => setCapabilityOverrides({}));
+
   it("shows nothing while decoding, asks for a render, then draws colored cells within the width", async () => {
+    setCapabilityOverrides({ trueColor: true }); // 24-bit cells expected below, whatever COLORTERM the runner has
     const requestRender = vi.fn();
     const image = new CellImage(png(40, 20), { maxWidthCells: 60, maxHeightCells: 10, requestRender, fallback: () => { throw new Error("no fallback"); } });
     expect(image.render(80)).toEqual([]);
@@ -135,6 +138,19 @@ describe("CellImage", () => {
     expect(lines.join("")).not.toContain("\x1b_G");
     for (const width of [80, 20, 3]) for (const line of image.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
     expect(image.render(80)).toBe(image.render(80)); // cached per width
+  });
+
+  it("follows the terminal's color mode: 256-color cells without truecolor, redrawn when the mode changes", async () => {
+    setCapabilityOverrides({ trueColor: false });
+    const requestRender = vi.fn();
+    const image = new CellImage(png(40, 20), { maxWidthCells: 60, maxHeightCells: 10, requestRender, fallback: () => { throw new Error("no fallback"); } });
+    image.render(80);
+    await vi.waitFor(() => expect(requestRender).toHaveBeenCalledTimes(1));
+    const indexed = image.render(80).join("");
+    expect(indexed).toMatch(/\x1b\[38;5;\d+m(?:\x1b\[48;5;\d+m)?\u2580/);
+    expect(indexed).not.toContain("\x1b[38;2;");
+    setCapabilityOverrides({ trueColor: true });
+    expect(image.render(80).join("")).toContain("\x1b[38;2;255;0;0m");
   });
 
   it("falls back to the given component when the image cannot be decoded", async () => {
