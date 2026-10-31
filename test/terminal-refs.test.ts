@@ -1,8 +1,10 @@
 import { createHash } from "node:crypto";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Image, resetCapabilitiesCache, setCapabilities, setImageTranscoder, visibleWidth } from "@earendil-works/pi-tui";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   addMarkers, fileImageRef, HERDR_PI_INTEGRATION_FILE, HERDR_PI_INTEGRATION_INSTALL, herdrPiIntegration, ImageRefIndex, imageDigest,
   installMarkerProvider, kittyPlacement, MARKER_CELL, markersActive, markersEnabled, markerUri, markFileImage, MAX_FILE_REF_PATH,
@@ -55,8 +57,14 @@ function fakePi() {
   const emit = (name: string, event: object, ctx?: object) => { for (const handler of handlers.get(name) ?? []) handler({ type: name, ...event }, ctx); };
   return { pi, emit };
 }
-function context(branch: unknown[], overrides: object = {}) {
-  return { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "01a142f0-cec2-7551-9aed-c54190245745", getBranch: () => branch }, ...overrides };
+/** Sessions live in files Pi writes with their first message; the web resolves a marker's session from that file. */
+const sessionDir = mkdtempSync(join(tmpdir(), "pi-images-refs-"));
+const WRITTEN_SESSION = join(sessionDir, "written.jsonl");
+writeFileSync(WRITTEN_SESSION, `${JSON.stringify({ type: "session", id: "01a142f0-cec2-7551-9aed-c54190245745" })}\n`);
+afterAll(() => rmSync(sessionDir, { recursive: true, force: true }));
+function context(branch: unknown[], overrides: object = {}, sessionFile: string | null = WRITTEN_SESSION) {
+  return { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "01a142f0-cec2-7551-9aed-c54190245745", getBranch: () => branch,
+    getSessionFile: () => sessionFile ?? undefined }, ...overrides };
 }
 
 beforeEach(() => setCapabilities(KITTY_CAPS));
@@ -185,13 +193,42 @@ describe("Pi image components", () => {
   const render = (image: Image) => image.render(80);
   let cleanup: (() => void)[] = [];
   afterEach(() => { for (const fn of cleanup.splice(0)) fn(); });
-  const start = (branch: unknown[], env: NodeJS.ProcessEnv = herdr, ctx: object = {}) => {
+  const start = (branch: unknown[], env: NodeJS.ProcessEnv = herdr, ctx: object = {}, sessionFile: string | null = WRITTEN_SESSION) => {
     const { pi, emit } = fakePi();
     registerTerminalImageRefs(pi, { env });
-    emit("session_start", { reason: "startup" }, context(branch, ctx));
+    emit("session_start", { reason: "startup" }, context(branch, ctx, sessionFile));
     cleanup.push(() => emit("session_shutdown", { reason: "quit" }));
     return emit;
   };
+
+  it("writes no marker until Pi has written the session file the web resolves `s` from, then marks the same component", () => {
+    // A fresh session: Pi knows its file path but writes the file only with the first message.
+    const fresh = join(sessionDir, `fresh-${Date.now()}.jsonl`);
+    const emit = start([wideResult], herdr, {}, fresh);
+    const pasted = markFileImage(new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 }), "/tmp/paste.png");
+    const tool = new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 });
+    expect(markersIn(render(pasted))).toEqual([]);
+    expect(markersIn(render(tool))).toEqual([]);
+    expect(render(pasted)[0]).toContain("\x1b_G"); // the native image is otherwise unchanged
+
+    writeFileSync(fresh, "{}\n");
+    expect(new Set(markersIn(render(pasted)).map((m) => m.fields?.ref))).toEqual(new Set(["file:/tmp/paste.png"]));
+    expect(markersIn(render(tool)).length).toBeGreaterThan(0);
+
+    // /new: the next session's file is not written yet, so its markers wait again
+    const next = join(sessionDir, `next-${Date.now()}.jsonl`);
+    emit("session_start", { reason: "new" }, context([wideResult], {}, next));
+    expect(markersIn(render(pasted))).toEqual([]);
+    // and back to a written (resumed) session
+    emit("session_start", { reason: "resume" }, context([wideResult]));
+    expect(markersIn(render(pasted)).length).toBeGreaterThan(0);
+  });
+
+  it("writes no marker for a session that is never saved (--no-session)", () => {
+    start([wideResult], herdr, {}, null);
+    expect(markersIn(render(markFileImage(new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 }), "/tmp/paste.png")))).toEqual([]);
+    expect(markersIn(render(new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 })))).toEqual([]);
+  });
 
   it("adds markers to images of the session's tool results, once per render and stable across frames", () => {
     const native = new Image(WIDE, "image/png", fallbackTheme, { maxWidthCells: 20 }).render(80);

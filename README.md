@@ -156,6 +156,12 @@ rendering is unchanged.
   nothing. A path the web would not take (relative, `.`/`..` segments, control
   characters, over 1024 characters, a marker URI over 512) or a type it does
   not serve gets no marker, and the preview falls back to the text cells.
+- **Only for a session on disk:** Pi writes a new session's JSONL only with
+  its first message (and never with `--no-session`), and the web side resolves
+  a marker's `s` from that file. Until the file exists no image gets a marker:
+  a paste preview drawn before the first message is the text cells (not blank
+  rows), and the same preview switches to the native, marked picture once the
+  file is written. Native Kitty output is unchanged either way.
 - **Opening a picture (web side):** herdr-web-ui opens a click on any drawn
   picture (tool result or pasted) in its image viewer: enlarge, download and
   pi's image comments.

@@ -256,6 +256,9 @@ export function registerTerminalImageRefs(pi: ExtensionAPI,
   options: { env?: NodeJS.ProcessEnv; agentDir?: string; exists?: (path: string) => boolean } = {}): void {
   const index = new ImageRefIndex();
   let session: string | undefined;
+  /** The session's JSONL, and whether it is on disk: the web resolves a marker's `s` only from that file. */
+  let sessionFile: string | undefined;
+  let sessionWritten = false;
   let uninstall: (() => void) | undefined;
   const digests = new WeakMap<Image, { data: string; digest: string }>();
   /** Ref lookups per component, valid while its data, the session and the index are unchanged. */
@@ -265,6 +268,9 @@ export function registerTerminalImageRefs(pi: ExtensionAPI,
   const provider: MarkerProvider = (image, lines) => {
     const data = (image as unknown as { base64Data?: unknown }).base64Data;
     if (!session || typeof data !== "string") return undefined;
+    // Pi writes a new session's file only with its first message (never with --no-session); until then the web finds
+    // no session for a marker, so a paste preview marked before it stays blank there instead of falling back to cells.
+    if (!sessionWritten && !(sessionWritten = sessionFile !== undefined && existsSync(sessionFile))) return undefined;
     let ref: string | undefined;
     const file = fileImages().get(image);
     if (file !== undefined) {
@@ -295,10 +301,15 @@ export function registerTerminalImageRefs(pi: ExtensionAPI,
     uninstall?.();
     uninstall = undefined;
     session = undefined;
+    sessionFile = undefined;
+    sessionWritten = false;
     index.clear();
   };
   const sync = (ctx: ExtensionContext) => {
     session = ctx.sessionManager.getSessionId();
+    const file = ctx.sessionManager.getSessionFile();
+    if (file !== sessionFile) sessionWritten = false;
+    sessionFile = file;
     index.rebuild(ctx.sessionManager.getBranch());
   };
 

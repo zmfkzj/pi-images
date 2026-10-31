@@ -328,7 +328,10 @@ describe("registerPastedImages", () => {
       const refs = new Map<string, (event: any, ctx: any) => unknown>();
       registerTerminalImageRefs({ on: (name: string, handler: (event: any, ctx: any) => unknown) => { refs.set(name, handler); } } as unknown as ExtensionAPI,
         { env: herdr });
+      const sessionFile = join(dir, "session.jsonl");
+      writeFileSync(sessionFile, "{}\n");
       const session = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "01a14900-0000-7000-8000-00000000e2e1",
+        getSessionFile: () => sessionFile,
         // a read of the same bytes in the transcript: the pasted preview still names its own file
         getBranch: () => [{ type: "message", message: { role: "toolResult", toolCallId: "call_read", content: [{ type: "image", data, mimeType: "image/png" }] } }] } };
       try {
@@ -355,6 +358,46 @@ describe("registerPastedImages", () => {
         const cells = render({ data: { paths: [named] } });
         cells.render(80);
         await vi.waitFor(() => expect(pictureRows(cells.render(80))).toBeGreaterThan(0), { timeout: 2000 });
+      } finally {
+        refs.get("session_shutdown")?.({ type: "session_shutdown" }, session);
+        resetCapabilitiesCache();
+      }
+    });
+
+    it("draws a fresh session's draft preview as cells until Pi writes its session file, then natively with markers", async () => {
+      // Pi writes a new session's file only with the first message; the web cannot serve a marker before that.
+      const named = join(dir, "paste-20261031-020719-c5e37068.png");
+      writeFileSync(named, halvesPng(300, 190));
+      const sessionFile = join(dir, "fresh-session.jsonl");
+      setCapabilities({ images: "kitty", trueColor: true, hyperlinks: true });
+      const refs = new Map<string, (event: any, ctx: any) => unknown>();
+      registerTerminalImageRefs({ on: (name: string, handler: (event: any, ctx: any) => unknown) => { refs.set(name, handler); } } as unknown as ExtensionAPI,
+        { env: herdr });
+      const session = { mode: "tui", hasUI: true, sessionManager: { getSessionId: () => "01a14900-0000-7000-8000-00000000e2e2",
+        getSessionFile: () => sessionFile, getBranch: () => [] } };
+      try {
+        vi.useFakeTimers();
+        const { setWidget, type } = setup([], { env: herdr, mode: "tui" });
+        refs.get("session_start")!({ type: "session_start" }, session);
+        type(`\x1b[200~'${named}' \x1b[201~`, `'${named}' `);
+        vi.advanceTimersByTime(0);
+        vi.useRealTimers();
+        const tui = { requestRender: vi.fn() };
+        const widget = setWidget.mock.lastCall![1](tui, theme);
+        const first = widget.render(80);
+        expect(first.join("")).not.toContain("x-pi-image:");
+        await vi.waitFor(() => expect(tui.requestRender).toHaveBeenCalled(), { timeout: 2000 });
+        const cells = widget.render(80);
+        expect(cells.join("")).not.toContain("x-pi-image:");
+        expect(cells.join("")).not.toContain("\x1b_G");
+        expect(pictureRows(cells)).toBe(10);
+
+        // the first message wrote the session file: the same preview is now the web terminal's native image
+        writeFileSync(sessionFile, "{}\n");
+        const native = widget.render(80);
+        expect(native.some((line: string) => line.includes("\x1b_G"))).toBe(true);
+        expect(pictureRows(native)).toBe(0);
+        expect(native.filter((line: string) => line.includes(`ref=${encodeURIComponent(`file:${named}`)}&`)).length).toBeGreaterThan(0);
       } finally {
         refs.get("session_shutdown")?.({ type: "session_shutdown" }, session);
         resetCapabilitiesCache();
