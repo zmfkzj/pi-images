@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { dirname, extname, isAbsolute, join, relative, resolve } from "node:path";
-import { Type, type ImageContent, type ImagesContext, type Usage } from "@earendil-works/pi-ai";
+import type { ImageContent, ImagesContext, Usage } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
   truncateToVisualLines, withFileMutationQueue, type ExtensionContext, type Theme, type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
