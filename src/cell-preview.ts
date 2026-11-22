@@ -198,7 +198,7 @@ export class CellImage implements Component {
     maxWidthCells: number; maxHeightCells: number; requestRender: () => void; fallback: () => Component; link?: string;
   }) {}
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     const pixels = previewPixels(this.image, this.options.requestRender);
     if (pixels === undefined) return [];
     if (pixels === null) return (this.fallbackComponent ??= this.options.fallback()).render(width);

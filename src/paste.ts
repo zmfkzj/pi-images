@@ -183,7 +183,7 @@ export function imagesComponent(paths: readonly string[], theme: Theme, maxHeigh
 class MarkedOrCells implements Component {
   constructor(private readonly native: Image, private readonly cells: Component) {}
 
-  render(width: number): string[] {
+  render(width: number): readonly string[] {
     if (markersActive()) {
       const lines = this.native.render(width);
       if (lines.some((line) => line.includes(`\x1b]8;;${MARKER_SCHEME}:`))) return lines;

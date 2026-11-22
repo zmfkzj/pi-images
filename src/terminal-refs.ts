@@ -34,7 +34,8 @@ const SERVED_TYPES = new Set(["image/png", "image/jpeg", "image/gif", "image/web
 const PATCH = Symbol.for("pi-images:terminal-refs:image-render");
 
 export interface ImageRef { ref: string; data: string }
-type MarkerProvider = (image: Image, lines: string[]) => string[] | undefined;
+/** Pi 1.6 components may return a cached array from render(): read `lines`, never modify it. */
+type MarkerProvider = (image: Image, lines: readonly string[]) => readonly string[] | undefined;
 interface PatchState { original: Image["render"]; provider?: MarkerProvider; owner?: symbol }
 
 /** `ref` names of the served images in a tool result's content, in the order the web counts them. */
@@ -227,7 +228,7 @@ function patchState(): PatchState {
     state = { original: proto.render };
     const shared = state;
     proto[PATCH] = shared;
-    proto.render = function render(this: Image, width: number): string[] {
+    proto.render = function render(this: Image, width: number): readonly string[] {
       const lines = shared.original.call(this, width);
       if (!shared.provider) return lines;
       try { return shared.provider(this, lines) ?? lines; } catch { return lines; }
@@ -249,7 +250,7 @@ export function installMarkerProvider(provider: MarkerProvider): () => void {
   };
 }
 
-interface Rendered { source: string[]; key: string; lines: string[] }
+interface Rendered { source: readonly string[]; key: string; lines: readonly string[] }
 
 /** Writes terminal image references for this session's tool-result images (see module comment). */
 export function registerTerminalImageRefs(pi: ExtensionAPI,
